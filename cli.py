@@ -253,6 +253,11 @@ def main():
     p_wv.add_argument("--ppr", type=float)
     p_wv.set_defaults(fn=cmd_waivers)
 
+    p_fp = sub.add_parser("fp-check",
+                          help="probe the FantasyPros API and show what your key unlocks")
+    p_fp.add_argument("--season", type=int)
+    p_fp.set_defaults(fn=cmd_fp_check)
+
     args = parser.parse_args()
     try:
         args.fn(args)
@@ -513,3 +518,33 @@ def cmd_waivers(args):
     console.print(table)
     console.print("[dim]+lineup is points per week added to your optimal starting "
                   "lineup. A high-ppg player who cannot crack your lineup is worth 0.[/dim]")
+
+
+def cmd_fp_check(args):
+    """Probe the FantasyPros API and report what your key unlocks."""
+    from ff.sources import fantasypros as fp
+
+    if not fp.api_key():
+        console.print("[red]No FANTASYPROS_API_KEY found.[/red]\n")
+        console.print("Add it to your .env file (already gitignored):\n")
+        console.print("  [bold]echo 'FANTASYPROS_API_KEY=your_key_here' >> "
+                      '"/Users/nickcolucci/Claude Stuff/ff-agent/.env"[/bold]\n')
+        console.print("[dim]Do not paste the key into a chat window - "
+                      "it would persist in the transcript.[/dim]")
+        raise SystemExit(1)
+
+    state = sleeper.nfl_state()
+    season = int(args.season or state.get("season") or 2026)
+    console.print(f"[dim]Probing FantasyPros for season {season}. "
+                  f"Key loaded from environment (not shown).[/dim]\n")
+
+    table = Table(title="FantasyPros endpoint probe")
+    for col in ("endpoint", "status", "players", "fields returned"):
+        table.add_column(col, overflow="fold")
+    for r in fp.probe(season):
+        if r["ok"]:
+            table.add_row(r["endpoint"], "[green]ok[/green]", str(r["count"]),
+                          ", ".join(r["top_keys"]) or f"wrapper: {r['wrapper_keys']}")
+        else:
+            table.add_row(r["endpoint"], "[red]failed[/red]", "-", r["error"])
+    console.print(table)
