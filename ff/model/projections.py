@@ -417,3 +417,39 @@ class ExpectedPointsProjector:
                 basis=f"expected {games_seen:.0f}g",
             )
         return out
+
+
+class FantasyProsProjector:
+    """Expert consensus projections, rescored under the league's own rules."""
+
+    def __init__(self, payload_players: List[Dict], rules: "ScoringRules"):
+        self.players = payload_players
+        self.rules = rules
+
+    def project(self, universe: PlayerUniverse,
+                positions: Iterable[str] = ("QB", "RB", "WR", "TE", "K", "DST")) -> Dict[Tuple[str, str], Projection]:
+        from ..sources.fantasypros import score_projection
+
+        want = {norm_pos(p) for p in positions}
+        out: Dict[Tuple[str, str], Projection] = {}
+        unresolved = 0
+        for entry in self.players:
+            pos = norm_pos(entry.get("position_id"))
+            if pos not in want:
+                continue
+            stats = entry.get("stats") or {}
+            points = score_projection(stats, self.rules, position=pos)
+            if points <= 0:
+                continue
+            player = universe.resolve(entry.get("name") or "", pos,
+                                      entry.get("team_id"))
+            if player is None:
+                unresolved += 1
+                continue
+            out[player.key] = Projection(
+                player=player, points=round(points, 2),
+                per_game=round(points / 16.0, 3), games=16.0,
+                basis="consensus",
+            )
+        self.unresolved = unresolved
+        return out

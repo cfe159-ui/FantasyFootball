@@ -134,3 +134,57 @@ def probe(season: int, key: Optional[str] = None) -> List[Dict]:
         except Exception as exc:  # noqa: BLE001 - report, do not raise
             results.append({"endpoint": label, "ok": False, "error": str(exc)[:180]})
     return results
+
+
+# FantasyPros stat keys -> our canonical vocabulary.
+FP_STAT_MAPPING = {
+    "pass_yds": "pass_yd", "pass_tds": "pass_td", "pass_ints": "pass_int",
+    "rush_yds": "rush_yd", "rush_tds": "rush_td",
+    "rec_rec": "rec", "rec_yds": "rec_yd", "rec_tds": "rec_td",
+    "fumbles": "fum_lost", "ret_tds": "ret_td", "2pt_tds": "rush_2pt",
+    "xpt": "pat_made",
+    "def_sack": "def_sack", "def_int": "def_int", "def_fr": "def_fum_rec",
+    "def_td": "def_td", "def_safety": "def_safety", "def_retd": "def_ret_td",
+}
+
+# Defensive points-allowed buckets, in tier order: 0, 1-6, 7-13, 14-20,
+# 21-27, 28-34, 35+. Values are expected games landing in each bucket.
+PA_BUCKETS = ("def_pa_a", "def_pa_b", "def_pa_c", "def_pa_d",
+              "def_pa_e", "def_pa_f", "def_pa_g")
+
+# FantasyPros reports field goals as a single total with no distance split,
+# so distance-banded scoring has to be approximated. This is the points-per-FG
+# a typical distribution of attempts yields under Yahoo's default bands.
+BLENDED_FG_VALUE = 3.5
+
+
+def score_projection(stats: Dict[str, Any], rules, position: Optional[str] = None) -> float:
+    """Score a FantasyPros stat line under YOUR league's rules.
+
+    The API echoes back its own scoring regardless of the requested setting, so
+    the stat line is rescored locally rather than trusting its points field.
+    """
+    total = 0.0
+    for fp_key, canonical in FP_STAT_MAPPING.items():
+        value = stats.get(fp_key)
+        if value is None:
+            continue
+        try:
+            total += rules.values.get(canonical, 0.0) * float(value)
+        except (TypeError, ValueError):
+            continue
+
+    if position == "K":
+        try:
+            total += float(stats.get("fg") or 0) * BLENDED_FG_VALUE
+        except (TypeError, ValueError):
+            pass
+
+    if position == "DST":
+        for bucket, (_, _, tier_value) in zip(PA_BUCKETS, rules.pa_tiers):
+            try:
+                total += float(stats.get(bucket) or 0) * float(tier_value)
+            except (TypeError, ValueError):
+                continue
+
+    return total

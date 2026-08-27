@@ -5,12 +5,12 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from ..model.projections import (BaselineProjector, DefenseProjector,
-                                 ExpectedPointsProjector, MarketPrior,
-                                 Projection, ensemble)
+                                 ExpectedPointsProjector, FantasyProsProjector,
+                                 MarketPrior, Projection, ensemble)
 from ..model.scoring import ScoringRules
 from ..model.value import LeagueShape, ValuedPlayer, value_players
 from ..players import PlayerUniverse
-from ..sources import ffopportunity, nflverse
+from ..sources import fantasypros, ffopportunity, nflverse
 
 DEFAULT_SEASONS = 3
 
@@ -21,7 +21,12 @@ DEFAULT_SEASONS = 3
 #               rookies and changed situations at all
 # Expected points carry real weight because unsustainable touchdown rates show
 # up there first, and nowhere in raw production.
-DEFAULT_WEIGHTS = {"history": 0.40, "expected": 0.30, "market": 0.30}
+DEFAULT_WEIGHTS = {"consensus": 0.40, "expected": 0.25, "history": 0.20,
+                   "market": 0.15}
+
+# Without a FantasyPros key the remaining three sources are renormalized, so
+# the blend stays sensible rather than silently losing 40% of its weight.
+WEIGHTS_NO_CONSENSUS = {"history": 0.40, "expected": 0.30, "market": 0.30}
 
 
 def build_board(universe: PlayerUniverse, shape: LeagueShape, rules: ScoringRules,
@@ -50,12 +55,40 @@ def build_board(universe: PlayerUniverse, shape: LeagueShape, rules: ScoringRule
                 exp_weekly, projector.per_game, seasons=history_seasons
             ).project(universe, positions=exp_positions)
 
-    blended = ensemble(sources, weights or DEFAULT_WEIGHTS)
+    # Expert consensus, when a key is configured. Covers K and DST too, which
+    # the historical projector handles separately and the market prior not at all.
+    if fantasypros.api_key():
+        try:
+            payload = fantasypros.projections(
+                current_season, "ALL",
+                fantasypros.scoring_code(rules.ppr))
+            fp_players = fantasypros.parse_players(payload)
+            if fp_players:
+                sources["consensus"] = FantasyProsProjector(
+                    fp_players, rules).project(universe, positions=positions)
+        except Exception:  # noqa: BLE001 - a bad key must not break the board
+            pass
+
+    chosen = weights or (DEFAULT_WEIGHTS if "consensus" in sources
+                         else WEIGHTS_NO_CONSENSUS)
+    blended = ensemble(sources, chosen)
 
     if "DST" in positions:
         team_weekly = nflverse.team_defense(history_seasons)
-        blended.update(DefenseProjector(team_weekly, rules,
-                                        seasons=history_seasons).project(universe))
+        historical_dst = DefenseProjector(team_weekly, rules,
+                                          seasons=history_seasons).project(universe)
+        # Blend consensus defense with the historical estimate where both exist,
+        # rather than letting either overwrite the other.
+        for key, proj in historical_dst.items():
+            existing = blended.get(key)
+            if existing and "consensus" in (existing.basis or ""):
+                merged = round(0.6 * existing.points + 0.4 * proj.points, 2)
+                blended[key] = Projection(
+                    player=proj.player, points=merged,
+                    per_game=round(merged / 16.0, 3), games=16.0,
+                    basis="consensus+history")
+            elif not existing:
+                blended[key] = proj
 
     return value_players(blended, shape, positions=positions)
 
