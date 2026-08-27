@@ -1,0 +1,10 @@
+.venv/
+data/cache/
+data/yahoo_token.json
+data/config.json
+.env
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/

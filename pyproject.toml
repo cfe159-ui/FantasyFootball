@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ff-agent"
+version = "0.1.0"
+description = "Fantasy football assistant: Yahoo league state plus free public NFL data"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.31",
+    "pandas>=2.0",
+    "pyarrow>=14",
+    "python-dotenv>=1.0",
+    "rich>=13.0",
+]
+
+[project.scripts]
+ff = "cli:main"
+
+[tool.setuptools]
+packages = ["ff", "ff.sources", "ff.advice"]
+py-modules = ["cli"]
