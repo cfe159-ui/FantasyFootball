@@ -479,7 +479,19 @@ def cmd_waivers(args):
         projections = _projection_table(universe, shape, rules, season)
         byes = nflverse.bye_weeks(season) or nflverse.bye_weeks(season - 1)
         trend = dict(sleeper.trending("add", 24, 200))
-        pool = assume_available(universe, shape, [p.name for p in roster])
+
+        ownership = {}
+        pool_basis = "consensus rank (rough)"
+        from ff.sources import fantasypros as fp
+        if fp.api_key():
+            try:
+                ownership = fp.yahoo_ownership(season, fp.scoring_code(shape.ppr))
+                if ownership:
+                    pool_basis = f"Yahoo ownership, {len(ownership)} players"
+            except Exception:  # noqa: BLE001 - fall back rather than fail
+                ownership = {}
+        pool = assume_available(universe, shape, [p.name for p in roster],
+                                ownership=ownership)
 
     def ppg(p):
         v = projections.get(p.key)
@@ -505,7 +517,7 @@ def cmd_waivers(args):
                            limit=args.limit)
 
     console.print(f"[dim]{origin} | week {week} | "
-                  f"free-agent pool estimated from consensus rank[/dim]\n")
+                  f"free-agent pool from {pool_basis}[/dim]\n")
     table = Table(title="Waiver targets, ranked by improvement to YOUR lineup")
     for col in ("#", "player", "pos", "team", "ppg", "+lineup", "FAAB", "why"):
         table.add_column(col, overflow="ellipsis")

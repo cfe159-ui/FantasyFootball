@@ -127,17 +127,35 @@ def rank_targets(roster: Sequence[Tuple[Player, float]],
 
 def assume_available(universe: PlayerUniverse, shape: LeagueShape,
                      rostered_names: Optional[Iterable[str]] = None,
-                     positions=("QB", "RB", "WR", "TE")) -> List[Player]:
-    """Approximate the free-agent pool without Yahoo access.
+                     positions=("QB", "RB", "WR", "TE"),
+                     ownership: Optional[Mapping[Tuple[str, str], float]] = None,
+                     max_owned_pct: float = 60.0) -> List[Player]:
+    """The free-agent pool.
 
-    Sleeper's search_rank orders players by consensus relevance, so the top
-    (teams x roster size) are treated as rostered somewhere. This is an estimate;
-    once Yahoo access is granted the real free-agent list replaces it.
+    With FantasyPros ownership data this is grounded in the share of Yahoo
+    leagues each player is actually rostered in. Without it, falls back to
+    treating the top (teams x roster size) by consensus relevance as taken,
+    which is a much rougher guess.
+
+    Either way this is an approximation of *your* league until Yahoo API access
+    is granted and the real free-agent list can be read directly.
     """
     taken = {n.lower() for n in (rostered_names or [])}
+
+    if ownership:
+        pool = []
+        for player in universe.filter(positions=positions, rostered_only=True):
+            if player.name.lower() in taken:
+                continue
+            owned = ownership.get(player.key)
+            # An unlisted player is unranked by 130+ experts: assume available.
+            if owned is None or owned <= max_owned_pct:
+                pool.append(player)
+        pool.sort(key=lambda p: ownership.get(p.key, 0.0), reverse=True)
+        return pool
+
     roster_size = sum(shape.slots.values())
     cutoff = shape.num_teams * roster_size
-
     ranked = [p for p in universe.filter(positions=positions, rostered_only=True)
               if p.search_rank is not None]
     ranked.sort(key=lambda p: p.search_rank)

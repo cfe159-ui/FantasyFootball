@@ -188,3 +188,67 @@ def score_projection(stats: Dict[str, Any], rules, position: Optional[str] = Non
                 continue
 
     return total
+
+
+RANKING_POSITIONS = ("QB", "RB", "WR", "TE", "K", "DST")
+
+
+def all_consensus_rankings(season: int, scoring: str = "PPR",
+                           week: Optional[int] = None,
+                           key: Optional[str] = None) -> List[Dict]:
+    """Consensus rankings across every position.
+
+    The API rejects position=ALL with a 400, so each position is fetched
+    separately and the results concatenated.
+    """
+    out: List[Dict] = []
+    for position in RANKING_POSITIONS:
+        try:
+            payload = consensus_rankings(season, position, scoring, week, key)
+        except Exception:  # noqa: BLE001 - one bad position must not kill the rest
+            continue
+        for entry in parse_players(payload):
+            entry.setdefault("player_position_id", position)
+            out.append(entry)
+    return out
+
+
+def _to_float(value) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def yahoo_ownership(season: int, scoring: str = "PPR",
+                    key: Optional[str] = None) -> Dict[Tuple[str, str], float]:
+    """Percentage of Yahoo leagues in which each player is rostered.
+
+    This is the real thing the waiver module needs: who is actually available
+    in a Yahoo league, rather than an estimate from consensus relevance rank.
+    """
+    from ..util import norm_name, norm_pos
+
+    out: Dict[Tuple[str, str], float] = {}
+    for entry in all_consensus_rankings(season, scoring, key=key):
+        name = entry.get("player_name")
+        pos = norm_pos(entry.get("player_position_id"))
+        owned = _to_float(entry.get("player_owned_yahoo"))
+        if name and pos and owned is not None:
+            out[(norm_name(name), pos)] = owned
+    return out
+
+
+def consensus_ecr(season: int, scoring: str = "PPR",
+                  key: Optional[str] = None) -> Dict[Tuple[str, str], float]:
+    """Expert consensus rank per player, for use as a market prior."""
+    from ..util import norm_name, norm_pos
+
+    out: Dict[Tuple[str, str], float] = {}
+    for entry in all_consensus_rankings(season, scoring, key=key):
+        name = entry.get("player_name")
+        pos = norm_pos(entry.get("player_position_id"))
+        ecr = _to_float(entry.get("rank_ecr") or entry.get("player_ecr"))
+        if name and pos and ecr is not None:
+            out[(norm_name(name), pos)] = ecr
+    return out
