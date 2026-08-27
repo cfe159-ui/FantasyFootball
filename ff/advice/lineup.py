@@ -27,12 +27,19 @@ INELIGIBLE = 1e6
 
 @dataclass
 class RosterSpot:
-    """A player available for this week's lineup."""
+    """A player available for this week's lineup.
+
+    `points` is the expected value already discounted for injury risk, so the
+    optimizer compares like with like: a 14-point Questionable player and a
+    9-point healthy one are 7.8 versus 9.0, and the healthy one starts.
+    """
     player: Player
     points: float
     eligible: Tuple[str, ...]
     on_bye: bool = False
     unavailable_reason: Optional[str] = None
+    raw_points: Optional[float] = None
+    availability: Optional[object] = None
 
     @property
     def startable(self) -> bool:

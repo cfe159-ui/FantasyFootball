@@ -420,28 +420,36 @@ def cmd_lineup(args):
                       "player name per line, or authorize Yahoo to read it automatically.")
         raise SystemExit(1)
 
+    from ff.model import availability as av
+
     with console.status("Projecting..."):
         projections = _projection_table(universe, shape, rules, season)
         byes = nflverse.bye_weeks(season) or nflverse.bye_weeks(season - 1)
+        reports = av.build_report_index(nflverse.injuries([season]), season)
 
     spots = []
     for p in roster:
         v = projections.get(p.key)
         ppg = v.projection.per_game if v else 0.0
-        spots.append(RosterSpot(player=p, points=round(ppg, 2),
-                                eligible=(p.position,),
-                                on_bye=byes.get(p.team or "") == week,
-                                unavailable_reason=("Out" if p.injury_status in
-                                                    ("Out", "IR") else None)))
+        avail = av.for_player(p, reports, week)
+        spots.append(RosterSpot(
+            player=p, points=round(ppg * avail.multiplier, 2),
+            eligible=(p.position,),
+            on_bye=byes.get(p.team or "") == week,
+            unavailable_reason="Out" if avail.is_out else None,
+            raw_points=round(ppg, 2), availability=avail))
     result = optimize(spots, shape)
 
     console.print(f"[dim]{origin} | week {week} | {rules.describe()}[/dim]\n")
     table = Table(title=f"Optimal lineup - week {week}")
-    for col in ("slot", "player", "pos", "team", "proj"):
+    for col in ("slot", "player", "pos", "team", "proj", "status"):
         table.add_column(col)
     for slot, s in result.starters:
+        note = s.availability.describe() if s.availability else ""
+        raw = f"{s.raw_points:.1f} -> " if note and s.raw_points else ""
         table.add_row(slot, s.player.name, s.player.position or "",
-                      s.player.team or "", f"{s.points:.1f}")
+                      s.player.team or "", f"{raw}{s.points:.1f}",
+                      f"[yellow]{note}[/yellow]" if note else "")
     table.add_section()
     table.add_row("", "[bold]TOTAL[/bold]", "", "", f"[bold]{result.total:.1f}[/bold]")
     console.print(table)
@@ -453,7 +461,9 @@ def cmd_lineup(args):
         for col in ("player", "pos", "team", "proj", "note"):
             bench.add_column(col)
         for s in result.bench:
-            note = "BYE" if s.on_bye else (s.unavailable_reason or "")
+            note = "BYE" if s.on_bye else (
+                s.unavailable_reason
+                or (s.availability.describe() if s.availability else ""))
             bench.add_row(s.player.name, s.player.position or "", s.player.team or "",
                           f"{s.points:.1f}", f"[yellow]{note}[/yellow]" if note else "")
         console.print(bench)

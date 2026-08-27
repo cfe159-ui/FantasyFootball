@@ -134,3 +134,17 @@ def team_defense(seasons: List[int]) -> pd.DataFrame:
     pa = points_allowed(seasons)
     merged = stats.merge(pa, on=["season", "week", "team"], how="left")
     return merged
+
+
+def injuries(seasons: List[int]) -> pd.DataFrame:
+    """Official weekly NFL injury reports: designation and practice participation."""
+    frames = []
+    for season in seasons:
+        try:
+            frames.append(_cached_parquet(
+                f"{RELEASE}/injuries/injuries_{season}.parquet",
+                f"nflverse_injuries_{season}",
+            ))
+        except Exception:  # noqa: BLE001 - not published until the season starts
+            continue
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
