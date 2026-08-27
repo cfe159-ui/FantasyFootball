@@ -238,6 +238,21 @@ def main():
                       help="explicit slots, e.g. QB:1,RB:2,WR:3,TE:1,W/R/T:1,K:1,DST:1,BN:6")
     p_ls.set_defaults(fn=cmd_league_setup)
 
+    p_lu = sub.add_parser("lineup", help="optimal starting lineup for a week")
+    p_lu.add_argument("--week", type=int)
+    p_lu.add_argument("--season", type=int)
+    p_lu.add_argument("--teams", type=int)
+    p_lu.add_argument("--ppr", type=float)
+    p_lu.set_defaults(fn=cmd_lineup)
+
+    p_wv = sub.add_parser("waivers", help="waiver targets ranked by lineup improvement")
+    p_wv.add_argument("--week", type=int)
+    p_wv.add_argument("--season", type=int)
+    p_wv.add_argument("--limit", type=int, default=20)
+    p_wv.add_argument("--teams", type=int)
+    p_wv.add_argument("--ppr", type=float)
+    p_wv.set_defaults(fn=cmd_waivers)
+
     args = parser.parse_args()
     try:
         args.fn(args)
@@ -357,3 +372,144 @@ def cmd_league_setup(args):
     console.print(table)
     console.print("\n[dim]These are used until Yahoo API access is approved, "
                   "after which your real league settings take over.[/dim]")
+
+
+def _projection_table(universe, shape, rules, season):
+    """Per-game projections keyed by player, shared by lineup and waivers."""
+    from ff.advice.draft import build_board
+    board = build_board(universe, shape, rules, season)
+    return {v.player.key: v for v in board}
+
+
+def _load_local_roster(universe):
+    """Roster from data/roster.txt (one player name per line) for pre-Yahoo use."""
+    from ff.util import DATA_DIR
+    path = DATA_DIR / "roster.txt"
+    if not path.exists():
+        return None, path
+    players, unresolved = [], []
+    for line in path.read_text().splitlines():
+        name = line.strip()
+        if not name or name.startswith("#"):
+            continue
+        p = universe.resolve(name)
+        (players.append(p) if p else unresolved.append(name))
+    if unresolved:
+        console.print(f"[yellow]Unresolved in roster.txt: {', '.join(unresolved)}[/yellow]")
+    return players, path
+
+
+def cmd_lineup(args):
+    from ff.advice.lineup import RosterSpot, optimize
+    from ff.sources import nflverse
+
+    universe = _universe()
+    shape, rules, origin = _league_shape_and_rules(args)
+    state = sleeper.nfl_state()
+    season = int(args.season or state.get("season") or 2026)
+    week = args.week or int(state.get("week") or 1)
+
+    roster, path = _load_local_roster(universe)
+    if not roster:
+        console.print(f"[red]No roster found.[/red] Create [bold]{path}[/bold] with one "
+                      "player name per line, or authorize Yahoo to read it automatically.")
+        raise SystemExit(1)
+
+    with console.status("Projecting..."):
+        projections = _projection_table(universe, shape, rules, season)
+        byes = nflverse.bye_weeks(season) or nflverse.bye_weeks(season - 1)
+
+    spots = []
+    for p in roster:
+        v = projections.get(p.key)
+        ppg = v.projection.per_game if v else 0.0
+        spots.append(RosterSpot(player=p, points=round(ppg, 2),
+                                eligible=(p.position,),
+                                on_bye=byes.get(p.team or "") == week,
+                                unavailable_reason=("Out" if p.injury_status in
+                                                    ("Out", "IR") else None)))
+    result = optimize(spots, shape)
+
+    console.print(f"[dim]{origin} | week {week} | {rules.describe()}[/dim]\n")
+    table = Table(title=f"Optimal lineup - week {week}")
+    for col in ("slot", "player", "pos", "team", "proj"):
+        table.add_column(col)
+    for slot, s in result.starters:
+        table.add_row(slot, s.player.name, s.player.position or "",
+                      s.player.team or "", f"{s.points:.1f}")
+    table.add_section()
+    table.add_row("", "[bold]TOTAL[/bold]", "", "", f"[bold]{result.total:.1f}[/bold]")
+    console.print(table)
+
+    if result.empty_slots:
+        console.print(f"[yellow]Unfilled slots: {', '.join(result.empty_slots)}[/yellow]")
+    if result.bench:
+        bench = Table(title="Bench")
+        for col in ("player", "pos", "team", "proj", "note"):
+            bench.add_column(col)
+        for s in result.bench:
+            note = "BYE" if s.on_bye else (s.unavailable_reason or "")
+            bench.add_row(s.player.name, s.player.position or "", s.player.team or "",
+                          f"{s.points:.1f}", f"[yellow]{note}[/yellow]" if note else "")
+        console.print(bench)
+
+
+def cmd_waivers(args):
+    from ff.advice.waivers import assume_available, rank_targets
+    from ff.sources import nflverse
+
+    universe = _universe()
+    shape, rules, origin = _league_shape_and_rules(args)
+    state = sleeper.nfl_state()
+    season = int(args.season or state.get("season") or 2026)
+    week = args.week or int(state.get("week") or 1)
+
+    roster, path = _load_local_roster(universe)
+    if not roster:
+        console.print(f"[red]No roster found.[/red] Create [bold]{path}[/bold] with one "
+                      "player name per line.")
+        raise SystemExit(1)
+
+    with console.status("Projecting and scanning the wire..."):
+        projections = _projection_table(universe, shape, rules, season)
+        byes = nflverse.bye_weeks(season) or nflverse.bye_weeks(season - 1)
+        trend = dict(sleeper.trending("add", 24, 200))
+        pool = assume_available(universe, shape, [p.name for p in roster])
+
+    def ppg(p):
+        v = projections.get(p.key)
+        return v.projection.per_game if v else 0.0
+
+    roster_pairs = [(p, ppg(p)) for p in roster]
+
+    # Take the best candidates *per position*. Ranking the pool by raw points
+    # would fill it with backup quarterbacks, who outscore startable receivers
+    # in raw terms while being worth nothing to a team that already has a QB.
+    by_pos = {}
+    for p in pool:
+        v = ppg(p)
+        if v > 0:
+            by_pos.setdefault(p.position, []).append((p, v))
+    avail_pairs = []
+    for pos, group in by_pos.items():
+        group.sort(key=lambda pair: -pair[1])
+        avail_pairs.extend(group[:30])
+
+    targets = rank_targets(roster_pairs, avail_pairs, shape,
+                           trending=trend, bye_weeks=byes, week=week,
+                           limit=args.limit)
+
+    console.print(f"[dim]{origin} | week {week} | "
+                  f"free-agent pool estimated from consensus rank[/dim]\n")
+    table = Table(title="Waiver targets, ranked by improvement to YOUR lineup")
+    for col in ("#", "player", "pos", "team", "ppg", "+lineup", "FAAB", "why"):
+        table.add_column(col, overflow="ellipsis")
+    for i, t in enumerate(targets, 1):
+        gain = f"[green]+{t.marginal_ppg:.1f}[/green]" if t.marginal_ppg > 0 else "0.0"
+        table.add_row(str(i), t.player.name, t.player.position or "",
+                      t.player.team or "", f"{t.projected_ppg:.1f}", gain,
+                      f"{t.faab_pct}%" if t.faab_pct else "-",
+                      "; ".join(t.reasons[:2]))
+    console.print(table)
+    console.print("[dim]+lineup is points per week added to your optimal starting "
+                  "lineup. A high-ppg player who cannot crack your lineup is worth 0.[/dim]")

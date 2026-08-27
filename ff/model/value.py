@@ -112,7 +112,8 @@ class ValuedPlayer:
     projection: Projection
     vor: float
     position_rank: int
-    tier: int = 0
+    tier: int = 0            # tier across the whole board
+    position_tier: int = 0   # tier among players at the same position
 
     @property
     def player(self) -> Player:
@@ -140,10 +141,45 @@ def replacement_levels(projections: Mapping[Tuple[str, str], Projection],
     return levels
 
 
+def assign_tiers(values: List[float], multiplier: float = 2.5,
+                 window: int = 10, floor: float = 0.75,
+                 max_tier_size: int = 8) -> List[int]:
+    """Group a descending list of values into tiers at meaningful dropoffs.
+
+    A single absolute threshold cannot work here: gaps between adjacent players
+    are ~14 points at the top of the board and ~0.5 in the middle, so any fixed
+    cutoff either splits the top into singletons or lumps sixty mid-round players
+    into one tier. Instead each gap is judged against the median gap in its own
+    neighbourhood, so "a big dropoff" means big *relative to where you are*.
+
+    max_tier_size forces a break through genuinely flat stretches, where players
+    really are interchangeable but a 20-deep tier is useless to read.
+    """
+    if len(values) < 2:
+        return [1] * len(values)
+
+    gaps = [values[i - 1] - values[i] for i in range(1, len(values))]
+    tiers = [1]
+    tier = 1
+    size = 1
+    for i, gap in enumerate(gaps):
+        lo = max(0, i - window)
+        hi = min(len(gaps), i + window + 1)
+        local = sorted(gaps[lo:hi])
+        median = local[len(local) // 2] if local else 0.0
+        threshold = max(floor, multiplier * median)
+        if gap > threshold or size >= max_tier_size:
+            tier += 1
+            size = 0
+        size += 1
+        tiers.append(tier)
+    return tiers
+
+
 def value_players(projections: Mapping[Tuple[str, str], Projection],
                   shape: LeagueShape,
                   positions: Iterable[str] = ("QB", "RB", "WR", "TE"),
-                  tier_gap: float = 12.0) -> List[ValuedPlayer]:
+                  tier_multiplier: float = 2.5) -> List[ValuedPlayer]:
     """Rank players by value over replacement, with tier breaks."""
     levels = replacement_levels(projections, shape, positions)
     pos_set = {norm_pos(p) for p in positions}
@@ -168,12 +204,13 @@ def value_players(projections: Mapping[Tuple[str, str], Projection],
         for i, v in enumerate(group, 1):
             v.position_rank = i
 
-    valued.sort(key=lambda v: v.vor, reverse=True)
+    # Positional tiers first: "which tier of tight end is left" is the question
+    # that actually gets asked on the clock.
+    for pos, group in by_pos.items():
+        for v, t in zip(group, assign_tiers([x.vor for x in group], tier_multiplier)):
+            v.position_tier = t
 
-    # Tier breaks wherever consecutive VOR drops by more than tier_gap.
-    tier = 1
-    for i, v in enumerate(valued):
-        if i > 0 and (valued[i - 1].vor - v.vor) > tier_gap:
-            tier += 1
-        v.tier = tier
+    valued.sort(key=lambda v: v.vor, reverse=True)
+    for v, t in zip(valued, assign_tiers([x.vor for x in valued], tier_multiplier)):
+        v.tier = t
     return valued
