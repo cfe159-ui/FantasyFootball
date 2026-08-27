@@ -269,3 +269,65 @@ def ensemble(sources: Mapping[str, Mapping[Tuple[str, str], Projection]],
             basis="+".join(sorted(components)),
         )
     return blended
+
+
+class DefenseProjector:
+    """Season projections for team defenses.
+
+    Defenses are keyed by team abbreviation rather than by name, and they carry
+    less signal year over year than any offensive position: turnovers in
+    particular regress hard. Historical weighting is therefore flatter, and the
+    result is shrunk further toward the league mean.
+    """
+
+    # Defense is noisy. Pull harder toward the league average than for skill
+    # positions, where individual talent persists.
+    DEFENSE_SHRINK = 0.55
+
+    def __init__(self, team_weekly: pd.DataFrame, rules: ScoringRules,
+                 seasons: Optional[List[int]] = None):
+        self.rules = rules
+        self.weekly = team_weekly
+        self.seasons = sorted(seasons or team_weekly["season"].unique(), reverse=True)
+
+    def project(self, universe: PlayerUniverse) -> Dict[Tuple[str, str], Projection]:
+        if self.weekly.empty:
+            return {}
+        df = self.weekly.copy()
+        df["fp"] = df.apply(self.rules.score_defense_row, axis=1)
+        grouped = df.groupby(["team", "season"], observed=True)
+        agg = grouped.agg(points=("fp", "sum"), games=("fp", "size")).reset_index()
+        agg["ppg"] = agg["points"] / agg["games"].clip(lower=1)
+
+        history: Dict[str, List[Tuple[int, float, int]]] = {}
+        for row in agg.itertuples(index=False):
+            history.setdefault(row.team, []).append(
+                (int(row.season), float(row.ppg), int(row.games)))
+        league_mean = float(agg["ppg"].mean()) if not agg.empty else 0.0
+
+        out: Dict[Tuple[str, str], Projection] = {}
+        for player in universe.filter(positions=["DST"], rostered_only=True):
+            # Sleeper names defenses by city ("Denver Broncos"); the join key is
+            # the team abbreviation.
+            team = player.team or player.sleeper_id
+            seasons = history.get(team, [])
+            weighted, wtotal = 0.0, 0.0
+            for season, ppg, games in seasons:
+                try:
+                    idx = self.seasons.index(season)
+                except ValueError:
+                    continue
+                if idx >= len(SEASON_WEIGHTS):
+                    continue
+                w = SEASON_WEIGHTS[idx] * games
+                weighted += ppg * w
+                wtotal += w
+            raw = weighted / wtotal if wtotal else league_mean
+            ppg_est = (self.DEFENSE_SHRINK * raw
+                       + (1 - self.DEFENSE_SHRINK) * league_mean)
+            out[player.key] = Projection(
+                player=player, points=round(ppg_est * 16.0, 2),
+                per_game=round(ppg_est, 3), games=16.0,
+                basis=f"def {len(seasons)}s" if seasons else "league mean",
+            )
+        return out

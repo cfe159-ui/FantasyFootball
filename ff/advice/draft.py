@@ -4,8 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from ..model.projections import (BaselineProjector, MarketPrior, Projection,
-                                 ensemble)
+from ..model.projections import (BaselineProjector, DefenseProjector,
+                                 MarketPrior, Projection, ensemble)
 from ..model.scoring import ScoringRules
 from ..model.value import LeagueShape, ValuedPlayer, value_players
 from ..players import PlayerUniverse
@@ -19,7 +19,7 @@ DEFAULT_WEIGHTS = {"history": 0.65, "market": 0.35}
 
 
 def build_board(universe: PlayerUniverse, shape: LeagueShape, rules: ScoringRules,
-                current_season: int, positions=("QB", "RB", "WR", "TE"),
+                current_season: int, positions=("QB", "RB", "WR", "TE", "K", "DST"),
                 weights: Optional[Dict[str, float]] = None,
                 seasons: int = DEFAULT_SEASONS) -> List[ValuedPlayer]:
     """Project, blend, and rank every relevant player by value over replacement."""
@@ -28,12 +28,19 @@ def build_board(universe: PlayerUniverse, shape: LeagueShape, rules: ScoringRule
     if weekly.empty:
         raise RuntimeError(f"No nflverse data for seasons {history_seasons}")
 
+    skill = tuple(p for p in positions if p != "DST")
     projector = BaselineProjector(weekly, rules, seasons=history_seasons)
-    historical = projector.project(universe, positions=positions)
-    market = MarketPrior(universe).project(historical, positions=positions)
+    historical = projector.project(universe, positions=skill)
+    market = MarketPrior(universe).project(historical, positions=skill)
 
     blended = ensemble({"history": historical, "market": market},
                        weights or DEFAULT_WEIGHTS)
+
+    if "DST" in positions:
+        team_weekly = nflverse.team_defense(history_seasons)
+        blended.update(DefenseProjector(team_weekly, rules,
+                                        seasons=history_seasons).project(universe))
+
     return value_players(blended, shape, positions=positions)
 
 

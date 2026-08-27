@@ -89,3 +89,48 @@ def snap_counts(seasons: List[int]) -> pd.DataFrame:
         except Exception:  # noqa: BLE001
             continue
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def team_week_stats(seasons: List[int], regular_season_only: bool = True) -> pd.DataFrame:
+    """Team-level weekly statistics."""
+    frames = []
+    for season in seasons:
+        try:
+            frames.append(_cached_parquet(
+                f"{RELEASE}/stats_team/stats_team_week_{season}.parquet",
+                f"nflverse_stats_team_week_{season}",
+            ))
+        except Exception:  # noqa: BLE001 - season not published yet
+            continue
+    if not frames:
+        return pd.DataFrame()
+    out = pd.concat(frames, ignore_index=True)
+    if regular_season_only and "season_type" in out.columns:
+        out = out[out["season_type"] == "REG"]
+    return out
+
+
+def points_allowed(seasons: List[int]) -> pd.DataFrame:
+    """Points each team allowed, per week, derived from final scores.
+
+    Team defense scoring is dominated by points allowed, and nflverse's team
+    stats do not carry it -- it comes from the scoreboard.
+    """
+    games = schedules()
+    games = games[games["season"].isin(seasons) & (games["game_type"] == "REG")]
+    home = games[["season", "week", "home_team", "away_score"]].rename(
+        columns={"home_team": "team", "away_score": "points_allowed"})
+    away = games[["season", "week", "away_team", "home_score"]].rename(
+        columns={"away_team": "team", "home_score": "points_allowed"})
+    out = pd.concat([home, away], ignore_index=True)
+    return out.dropna(subset=["points_allowed"])
+
+
+def team_defense(seasons: List[int]) -> pd.DataFrame:
+    """Team defensive stats joined with points allowed, ready for scoring."""
+    stats = team_week_stats(seasons)
+    if stats.empty:
+        return pd.DataFrame()
+    pa = points_allowed(seasons)
+    merged = stats.merge(pa, on=["season", "week", "team"], how="left")
+    return merged

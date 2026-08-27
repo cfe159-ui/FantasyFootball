@@ -126,7 +126,7 @@ class ValuedPlayer:
 
 def replacement_levels(projections: Mapping[Tuple[str, str], Projection],
                        shape: LeagueShape,
-                       positions: Iterable[str] = ("QB", "RB", "WR", "TE")) -> Dict[str, float]:
+                       positions: Iterable[str] = ("QB", "RB", "WR", "TE", "K", "DST")) -> Dict[str, float]:
     """Projected points of the replacement-level player at each position."""
     levels: Dict[str, float] = {}
     for position in positions:
@@ -178,7 +178,7 @@ def assign_tiers(values: List[float], multiplier: float = 2.5,
 
 def value_players(projections: Mapping[Tuple[str, str], Projection],
                   shape: LeagueShape,
-                  positions: Iterable[str] = ("QB", "RB", "WR", "TE"),
+                  positions: Iterable[str] = ("QB", "RB", "WR", "TE", "K", "DST"),
                   tier_multiplier: float = 2.5) -> List[ValuedPlayer]:
     """Rank players by value over replacement, with tier breaks."""
     levels = replacement_levels(projections, shape, positions)
