@@ -219,6 +219,25 @@ def main():
     p_pl.add_argument("--pos")
     p_pl.set_defaults(fn=cmd_player)
 
+    p_bd = sub.add_parser("board", help="draft board ranked by value over replacement")
+    p_bd.add_argument("--limit", type=int, default=40)
+    p_bd.add_argument("--pos", nargs="*", help="filter positions")
+    p_bd.add_argument("--teams", type=int, help="league size if not configured")
+    p_bd.add_argument("--ppr", type=float, help="points per reception if not configured")
+    p_bd.add_argument("--season", type=int)
+    p_bd.add_argument("--scarcity", action="store_true", help="show positional cliffs")
+    p_bd.set_defaults(fn=cmd_board)
+
+    p_ls = sub.add_parser("league-setup",
+                          help="record league rules by hand (works without Yahoo)")
+    p_ls.add_argument("--teams", type=int, default=12)
+    p_ls.add_argument("--ppr", type=float, default=1.0,
+                      help="0 standard, 0.5 half, 1 full")
+    p_ls.add_argument("--superflex", action="store_true")
+    p_ls.add_argument("--slots",
+                      help="explicit slots, e.g. QB:1,RB:2,WR:3,TE:1,W/R/T:1,K:1,DST:1,BN:6")
+    p_ls.set_defaults(fn=cmd_league_setup)
+
     args = parser.parse_args()
     try:
         args.fn(args)
@@ -229,3 +248,112 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def _league_shape_and_rules(args):
+    """League rules from Yahoo when authorized, else from local overrides."""
+    from ff.model.scoring import ScoringRules
+    from ff.model.value import LeagueShape
+    from ff.sources.yahoo import YahooClient
+
+    client = YahooClient()
+    lk = config.league_key()
+    if client.authenticated and lk:
+        from ff.sources.yahoo_league import League
+        settings = League(client, lk).settings()
+        return (LeagueShape.from_yahoo(settings),
+                ScoringRules.from_yahoo(settings),
+                f"Yahoo league '{settings.name}'")
+
+    saved = config.get("league_shape") or {}
+    shape = LeagueShape(
+        num_teams=saved.get("num_teams", args.teams or 12),
+        slots=saved.get("slots") or LeagueShape().slots,
+        ppr=saved.get("ppr", args.ppr if args.ppr is not None else 1.0),
+    )
+    rules = ScoringRules.preset(
+        {1.0: "ppr", 0.5: "half_ppr", 0.0: "standard"}.get(shape.ppr, "ppr"))
+    rules.values["rec"] = shape.ppr
+    origin = "saved league settings" if saved else "defaults (no league configured)"
+    return shape, rules, origin
+
+
+def cmd_board(args):
+    from ff.advice.draft import build_board, positional_scarcity
+
+    universe = _universe()
+    shape, rules, origin = _league_shape_and_rules(args)
+    state = sleeper.nfl_state()
+    season = int(args.season or state.get("season") or 2026)
+
+    with console.status(f"Projecting from {season - 3}-{season - 1} data..."):
+        board = build_board(universe, shape, rules, season)
+
+    if args.pos:
+        want = {p.upper() for p in args.pos}
+        board = [v for v in board if (v.player.position or "").upper() in want]
+
+    console.print(f"[dim]Rules: {origin} | {shape.num_teams} teams | "
+                  f"{rules.describe()}"
+                  f"{' | SUPERFLEX' if shape.is_superflex else ''}[/dim]\n")
+
+    table = Table(title=f"Draft board - {season}")
+    for col in ("#", "player", "pos", "team", "proj", "VOR", "tier", "basis"):
+        table.add_column(col)
+    prev_tier = None
+    for i, v in enumerate(board[: args.limit], 1):
+        if prev_tier is not None and v.tier != prev_tier:
+            table.add_section()
+        prev_tier = v.tier
+        table.add_row(str(i), v.player.name, v.player.position or "",
+                      v.player.team or "", f"{v.points:.0f}", f"{v.vor:+.0f}",
+                      str(v.tier), v.projection.basis)
+    console.print(table)
+
+    if args.scarcity:
+        sc = positional_scarcity(board, shape)
+        t2 = Table(title="Positional scarcity")
+        for col in ("pos", "elite VOR", "next tier", "cliff", "replacement rank"):
+            t2.add_column(col)
+        for pos in sorted(sc, key=lambda p: -sc[p]["cliff"]):
+            d = sc[pos]
+            t2.add_row(pos, f"{d['elite_vor']:+.0f}", f"{d['next_tier_vor']:+.0f}",
+                       f"{d['cliff']:.0f}", str(d["replacement_rank"]))
+        console.print(t2)
+        console.print("[dim]Cliff = how much value you lose waiting. "
+                      "Attack the steepest position first.[/dim]")
+
+
+def cmd_league_setup(args):
+    """Record league rules by hand, so the board is correct before Yahoo approval."""
+    from ff.model.value import LeagueShape
+
+    slots = {}
+    if args.slots:
+        for part in args.slots.split(","):
+            if ":" not in part:
+                console.print(f"[red]Bad slot '{part}', expected POS:COUNT[/red]")
+                raise SystemExit(1)
+            pos, n = part.split(":", 1)
+            slots[pos.strip().upper()] = int(n)
+    else:
+        slots = dict(LeagueShape().slots)
+        if args.superflex:
+            slots["SUPERFLEX"] = 1
+
+    shape = {"num_teams": args.teams, "slots": slots, "ppr": args.ppr}
+    config.set_("league_shape", shape)
+
+    s = LeagueShape(num_teams=args.teams, slots=slots, ppr=args.ppr)
+    table = Table(title="Saved league settings", show_header=False, box=None)
+    table.add_row("Teams", str(s.num_teams))
+    table.add_row("PPR", f"{s.ppr} per reception")
+    table.add_row("Starters", ", ".join(f"{k}x{v}" for k, v in s.slots.items()
+                                        if k not in ("BN", "IR")))
+    table.add_row("Bench", str(s.bench_slots))
+    table.add_row("Superflex", "yes" if s.is_superflex else "no")
+    table.add_row("Replacement rank",
+                  ", ".join(f"{p}#{s.replacement_rank(p)}" for p in ("QB", "RB", "WR", "TE")))
+    console.print(table)
+    console.print("\n[dim]These are used until Yahoo API access is approved, "
+                  "after which your real league settings take over.[/dim]")
