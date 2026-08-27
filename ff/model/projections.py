@@ -151,15 +151,20 @@ class BaselineProjector:
                 weight_total += w
                 games_seen += games * SEASON_WEIGHTS[idx]
 
-            if weight_total > 0:
-                raw_ppg = weighted_sum / weight_total
-                # Shrink toward the positional baseline by effective sample size.
-                shrink = games_seen / (games_seen + SHRINK_GAMES)
-                ppg_est = shrink * raw_ppg + (1 - shrink) * baseline
-                basis = f"{len(seasons)}s/{games_seen:.0f}g"
-            else:
-                ppg_est = baseline
-                basis = "no history"
+            if weight_total <= 0:
+                # No NFL history: a rookie, or a player who never saw the field.
+                # Emitting a replacement-level guess here would drag genuinely
+                # good rookies down, because the ensemble would blend that guess
+                # against expert consensus that actually scouted them. Omitting
+                # him lets ensemble() renormalize onto the sources that know
+                # something.
+                continue
+
+            raw_ppg = weighted_sum / weight_total
+            # Shrink toward the positional baseline by effective sample size.
+            shrink = games_seen / (games_seen + SHRINK_GAMES)
+            ppg_est = shrink * raw_ppg + (1 - shrink) * baseline
+            basis = f"{len(seasons)}s/{games_seen:.0f}g"
 
             ppg_est *= _age_factor(player.position, player.age)
 
