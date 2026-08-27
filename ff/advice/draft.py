@@ -5,17 +5,23 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from ..model.projections import (BaselineProjector, DefenseProjector,
-                                 MarketPrior, Projection, ensemble)
+                                 ExpectedPointsProjector, MarketPrior,
+                                 Projection, ensemble)
 from ..model.scoring import ScoringRules
 from ..model.value import LeagueShape, ValuedPlayer, value_players
 from ..players import PlayerUniverse
-from ..sources import nflverse
+from ..sources import ffopportunity, nflverse
 
 DEFAULT_SEASONS = 3
 
-# Historical production and draft-market consensus disagree most about rookies
-# and changed situations; the market gets a real but minority share.
-DEFAULT_WEIGHTS = {"history": 0.65, "market": 0.35}
+# Three views of the same player, deliberately disagreeing:
+#   history  -- what he actually produced
+#   expected -- what his opportunity said he should have produced
+#   market   -- what the draft market thinks, which is the only one that sees
+#               rookies and changed situations at all
+# Expected points carry real weight because unsustainable touchdown rates show
+# up there first, and nowhere in raw production.
+DEFAULT_WEIGHTS = {"history": 0.40, "expected": 0.30, "market": 0.30}
 
 
 def build_board(universe: PlayerUniverse, shape: LeagueShape, rules: ScoringRules,
@@ -33,8 +39,18 @@ def build_board(universe: PlayerUniverse, shape: LeagueShape, rules: ScoringRule
     historical = projector.project(universe, positions=skill)
     market = MarketPrior(universe).project(historical, positions=skill)
 
-    blended = ensemble({"history": historical, "market": market},
-                       weights or DEFAULT_WEIGHTS)
+    sources = {"history": historical, "market": market}
+
+    # Expected points cover only positions ffopportunity models (no K).
+    exp_positions = tuple(p for p in skill if p in ("QB", "RB", "WR", "TE"))
+    if exp_positions:
+        exp_weekly = ffopportunity.weekly_expected(history_seasons)
+        if not exp_weekly.empty:
+            sources["expected"] = ExpectedPointsProjector(
+                exp_weekly, projector.per_game, seasons=history_seasons
+            ).project(universe, positions=exp_positions)
+
+    blended = ensemble(sources, weights or DEFAULT_WEIGHTS)
 
     if "DST" in positions:
         team_weekly = nflverse.team_defense(history_seasons)

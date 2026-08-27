@@ -331,3 +331,89 @@ class DefenseProjector:
                 basis=f"def {len(seasons)}s" if seasons else "league mean",
             )
         return out
+
+
+class ExpectedPointsProjector:
+    """Projects from expected points rather than what actually happened.
+
+    ffopportunity computes expected points under its own fixed scoring, not
+    yours. Rather than importing those numbers directly, each player's expected
+    output is converted into league scoring by the ratio between his actual
+    points under your rules and his actual points under ffopportunity's. That
+    preserves the player's own usage mix -- a reception-heavy back converts
+    differently than a touchdown-dependent one -- without assuming both systems
+    score alike.
+    """
+
+    def __init__(self, expected_weekly: pd.DataFrame, league_per_game: pd.DataFrame,
+                 seasons: Optional[List[int]] = None):
+        self.expected = expected_weekly
+        self.league_per_game = league_per_game
+        self.seasons = sorted(seasons or [], reverse=True)
+
+    def project(self, universe: PlayerUniverse,
+                positions: Iterable[str] = ("QB", "RB", "WR", "TE")) -> Dict[Tuple[str, str], Projection]:
+        if self.expected.empty:
+            return {}
+
+        df = self.expected.copy()
+        df = df[df["position"].isin(set(positions))]
+        agg = df.groupby(["full_name", "position", "season"], observed=True).agg(
+            exp_points=("total_fantasy_points_exp", "sum"),
+            act_points=("total_fantasy_points", "sum"),
+            games=("week", "size"),
+        ).reset_index()
+        agg["nkey"] = agg["full_name"].map(norm_name)
+
+        # League-scored actuals, for the conversion ratio.
+        league = self.league_per_game.copy()
+        league["nkey"] = league["player_display_name"].map(norm_name)
+        league_points = {(r.nkey, r.position, int(r.season)): float(r.points)
+                         for r in league.itertuples(index=False)}
+
+        history: Dict[Tuple[str, str], List[Tuple[int, float, int]]] = {}
+        for row in agg.itertuples(index=False):
+            actual = row.act_points
+            if actual is None or actual != actual or actual <= 0:
+                continue
+            league_actual = league_points.get((row.nkey, row.position, int(row.season)))
+            if league_actual is None:
+                continue
+            ratio = league_actual / actual
+            # Guard against absurd ratios from tiny samples.
+            if not (0.2 < ratio < 3.0):
+                continue
+            exp_in_league = float(row.exp_points) * ratio
+            games = max(int(row.games), 1)
+            history.setdefault((row.nkey, row.position), []).append(
+                (int(row.season), exp_in_league / games, games))
+
+        out: Dict[Tuple[str, str], Projection] = {}
+        for player in universe.filter(positions=positions, rostered_only=True):
+            seasons = history.get(player.key, [])
+            if not seasons:
+                continue
+            weighted, wtotal, games_seen = 0.0, 0.0, 0.0
+            for season, ppg, games in seasons:
+                try:
+                    idx = self.seasons.index(season)
+                except ValueError:
+                    continue
+                if idx >= len(SEASON_WEIGHTS):
+                    continue
+                w = SEASON_WEIGHTS[idx] * games
+                weighted += ppg * w
+                wtotal += w
+                games_seen += games * SEASON_WEIGHTS[idx]
+            if wtotal <= 0:
+                continue
+            ppg_est = (weighted / wtotal) * _age_factor(player.position, player.age)
+            games = 16.0
+            if player.injury_status in ("Out", "IR", "Doubtful"):
+                games -= 3.0
+            out[player.key] = Projection(
+                player=player, points=round(ppg_est * games, 2),
+                per_game=round(ppg_est, 3), games=games,
+                basis=f"expected {games_seen:.0f}g",
+            )
+        return out
