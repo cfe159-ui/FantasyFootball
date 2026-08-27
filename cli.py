@@ -226,6 +226,9 @@ def main():
     p_bd.add_argument("--ppr", type=float, help="points per reception if not configured")
     p_bd.add_argument("--season", type=int)
     p_bd.add_argument("--scarcity", action="store_true", help="show positional cliffs")
+    p_bd.add_argument("--team-bias", type=float, default=0.5,
+                      help="strength of team/QB context tilt (0 disables)")
+    p_bd.add_argument("--no-team-bias", action="store_true")
     p_bd.set_defaults(fn=cmd_board)
 
     p_ls = sub.add_parser("league-setup",
@@ -316,6 +319,14 @@ def main():
     p_tr2.add_argument("--ppr", type=float)
     p_tr2.set_defaults(fn=cmd_trade)
 
+    p_tm = sub.add_parser("teams", help="Vegas implied scoring and projected wins")
+    p_tm.add_argument("--season", type=int)
+    p_tm.add_argument("--limit", type=int, default=32)
+    p_tm.add_argument("--team-bias", type=float, default=0.5)
+    p_tm.add_argument("--teams", type=int)
+    p_tm.add_argument("--ppr", type=float)
+    p_tm.set_defaults(fn=cmd_teams)
+
     args = parser.parse_args()
     try:
         args.fn(args)
@@ -364,8 +375,9 @@ def cmd_board(args):
     state = sleeper.nfl_state()
     season = int(args.season or state.get("season") or 2026)
 
+    bias = 0.0 if getattr(args, "no_team_bias", False) else getattr(args, "team_bias", 0.5)
     with console.status(f"Projecting from {season - 3}-{season - 1} data..."):
-        board = build_board(universe, shape, rules, season)
+        board = build_board(universe, shape, rules, season, team_bias=bias)
 
     if args.pos:
         want = {p.upper() for p in args.pos}
@@ -944,3 +956,49 @@ def cmd_trade(args):
         console.print(f"[dim]- {note}[/dim]")
     console.print("\n[dim]Judged by change to your optimal starting lineup, not raw "
                   "point totals: bench points do not score.[/dim]")
+
+
+def cmd_teams(args):
+    """Market view of every team: implied scoring and projected wins."""
+    from ff.model.context import build_contexts, multiplier
+    from ff.sources import vegas
+
+    season = int(args.season or sleeper.nfl_state().get("season") or 2026)
+    with console.status("Reading betting markets..."):
+        outlooks = vegas.team_outlooks(season)
+    if not outlooks:
+        console.print(f"[yellow]No posted lines for {season} yet.[/yellow]")
+        raise SystemExit(1)
+
+    universe = _universe()
+    shape, rules, origin = _league_shape_and_rules(args)
+    with console.status("Projecting quarterbacks..."):
+        from ff.advice.draft import build_board
+        board = build_board(universe, shape, rules, season, team_bias=0.0)
+    qb_by_team = {}
+    qb_name = {}
+    for v in board:
+        if (v.player.position or "").upper() == "QB" and v.player.team:
+            if v.points > qb_by_team.get(v.player.team, 0.0):
+                qb_by_team[v.player.team] = v.points
+                qb_name[v.player.team] = v.player.name
+    contexts = build_contexts(outlooks, qb_by_team)
+
+    rows = sorted(contexts.values(), key=lambda c: -c.implied_total)
+    table = Table(title=f"Team outlook - {season} (Vegas)")
+    for col in ("team", "implied pts/gm", "proj wins", "QB", "RB/WR tilt", "games priced"):
+        table.add_column(col)
+    for c in rows[: args.limit]:
+        wr = multiplier("WR", c, args.team_bias)
+        rb = multiplier("RB", c, args.team_bias)
+        colour = "green" if wr > 1.01 else ("red" if wr < 0.99 else "")
+        tilt = f"{(rb - 1) * 100:+.1f}% / {(wr - 1) * 100:+.1f}%"
+        table.add_row(c.team, f"{c.implied_total:.1f}", f"{c.projected_wins:.1f}",
+                      qb_name.get(c.team, "?")[:18],
+                      f"[{colour}]{tilt}[/{colour}]" if colour else tilt,
+                      str(c.games_priced))
+    console.print(table)
+    console.print("[dim]Tilt is the adjustment applied to that team's running backs "
+                  "and receivers. Sized from measured efficiency edges "
+                  "(RB +10.8%, WR +8.7% team; WR +11.8% QB, top vs bottom quartile) "
+                  "and halved, since consensus already prices some of it.[/dim]")

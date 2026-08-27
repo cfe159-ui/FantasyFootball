@@ -68,6 +68,7 @@ ff league-setup --teams 10 --ppr 0.5 --slots "QB:1,RB:2,WR:2,TE:1,W/R/T:2,K:1,DS
 ff fp-check                # what your FantasyPros key unlocks
 ff player "Name"
 ff trending --pos RB WR
+ff teams                   # Vegas implied scoring, projected wins, tilt applied
 ```
 
 After Yahoo approval (see `SETUP.md`):
@@ -109,6 +110,16 @@ without nesting -- `W/R` and `W/T` both take receivers, neither contains the
 other -- so greedy slot-filling strands points on your bench. Solved as
 maximum-weight bipartite matching and verified exact against brute force.
 
+**Team and QB context is measured, not assumed.** Across 875 player-seasons,
+comparing actual points to expected points (which already controls for
+opportunity), skill players on good offenses beat expectation: RB +10.8%,
+WR +8.7%, TE +2.3% between top and bottom quartile. Quarterback quality matters
+more to receivers than team quality does: WR +11.8%, RB +9.5%, TE +3.5%. The
+"bad teams throw more so their receivers eat" theory does not survive the data --
+good teams gave skill players both more opportunity and better efficiency. The
+tilt is halved before application, since consensus already prices some of it,
+and clamped to +/-8%. Disable with `--no-team-bias`.
+
 **Waivers and trades are judged by lineup improvement.** Bench points do not
 score. A 14-ppg quarterback is worth zero to a team already starting a 20-ppg
 one, and a 2-for-1 consolidation can win while losing on raw totals.
@@ -119,7 +130,7 @@ one, and a 2-for-1 consolidation can win while losing on raw totals.
 .venv/bin/python -m pytest tests/ -q
 ```
 
-32 tests, no network or API keys required.
+38 tests, no network or API keys required.
 
 ## Notes on the data
 

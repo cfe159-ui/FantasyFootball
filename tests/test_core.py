@@ -282,3 +282,70 @@ def test_consolidation_trade_judged_on_starting_lineup():
                        shape=shape)
     assert verdict.outgoing_value > verdict.incoming_value   # loses on raw points
     assert verdict.lineup_after > verdict.lineup_before      # wins where it counts
+
+
+# --------------------------------------------------------------------------
+# Team and quarterback context
+# --------------------------------------------------------------------------
+
+class _Outlook:
+    def __init__(self, implied, wins, priced=8):
+        self.implied_total = implied
+        self.projected_wins = wins
+        self.games_priced = priced
+
+
+def _contexts():
+    from ff.model.context import build_contexts
+    outlooks = {"DET": _Outlook(27.0, 11.0), "BUF": _Outlook(26.0, 10.0),
+                "CHI": _Outlook(22.0, 8.0), "ARI": _Outlook(18.0, 4.0)}
+    qb_points = {"DET": 300.0, "BUF": 380.0, "CHI": 250.0, "ARI": 200.0}
+    return build_contexts(outlooks, qb_points)
+
+
+def test_good_offense_tilts_up_and_bad_tilts_down():
+    from ff.model.context import multiplier
+    ctx = _contexts()
+    assert multiplier("RB", ctx["DET"]) > 1.0
+    assert multiplier("RB", ctx["ARI"]) < 1.0
+
+
+def test_quarterback_quality_helps_receivers_most():
+    """Measured QB effect is larger for WR (+11.8%) than TE (+3.5%)."""
+    from ff.model.context import multiplier
+    ctx = _contexts()
+    buf = ctx["BUF"]
+    wr_lift = multiplier("WR", buf) - 1.0
+    te_lift = multiplier("TE", buf) - 1.0
+    assert wr_lift > te_lift * 2
+
+
+def test_tight_ends_are_barely_affected():
+    """The data shows almost no team-quality efficiency edge for tight ends."""
+    from ff.model.context import multiplier
+    ctx = _contexts()
+    assert abs(multiplier("TE", ctx["DET"]) - 1.0) < 0.03
+
+
+def test_bias_stays_a_tilt_not_a_reprojection():
+    from ff.model.context import MAX_MULTIPLIER, MIN_MULTIPLIER, multiplier
+    from ff.model.context import TeamContext
+    extreme = TeamContext(team="X", implied_total=99.0, projected_wins=17.0,
+                          team_z=12.0, qb_z=12.0)
+    assert multiplier("WR", extreme, strength=5.0) <= MAX_MULTIPLIER
+    awful = TeamContext(team="Y", implied_total=1.0, projected_wins=0.0,
+                        team_z=-12.0, qb_z=-12.0)
+    assert multiplier("WR", awful, strength=5.0) >= MIN_MULTIPLIER
+
+
+def test_zero_strength_disables_the_tilt():
+    from ff.model.context import multiplier
+    assert multiplier("WR", _contexts()["DET"], strength=0.0) == 1.0
+
+
+def test_spread_converts_to_sensible_win_probability():
+    from ff.sources.vegas import _win_probability
+    assert _win_probability(0.0) == pytest.approx(0.5, abs=1e-6)
+    assert _win_probability(-7.0) > 0.65      # seven-point favourite
+    assert _win_probability(7.0) < 0.35
+    assert _win_probability(-14.0) > _win_probability(-7.0)

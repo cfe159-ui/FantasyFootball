@@ -9,8 +9,9 @@ from ..model.projections import (BaselineProjector, DefenseProjector,
                                  MarketPrior, Projection, ensemble)
 from ..model.scoring import ScoringRules
 from ..model.value import LeagueShape, ValuedPlayer, value_players
+from ..model import context as team_context
 from ..players import PlayerUniverse
-from ..sources import fantasypros, ffopportunity, nflverse
+from ..sources import fantasypros, ffopportunity, nflverse, vegas
 
 DEFAULT_SEASONS = 3
 
@@ -32,7 +33,8 @@ WEIGHTS_NO_CONSENSUS = {"history": 0.40, "expected": 0.30, "market": 0.30}
 def build_board(universe: PlayerUniverse, shape: LeagueShape, rules: ScoringRules,
                 current_season: int, positions=("QB", "RB", "WR", "TE", "K", "DST"),
                 weights: Optional[Dict[str, float]] = None,
-                seasons: int = DEFAULT_SEASONS) -> List[ValuedPlayer]:
+                seasons: int = DEFAULT_SEASONS,
+                team_bias: float = 0.5) -> List[ValuedPlayer]:
     """Project, blend, and rank every relevant player by value over replacement."""
     history_seasons = [current_season - i for i in range(1, seasons + 1)]
     weekly = nflverse.player_week_stats(history_seasons)
@@ -89,6 +91,20 @@ def build_board(universe: PlayerUniverse, shape: LeagueShape, rules: ScoringRule
                     basis="consensus+history")
             elif not existing:
                 blended[key] = proj
+
+    # Team and quarterback context, tilted onto the finished projections.
+    # Applied last so it adjusts the consensus blend rather than competing with
+    # it as another source -- this is a tilt, not a fifth opinion.
+    if team_bias > 0:
+        outlooks = vegas.team_outlooks(current_season)
+        if outlooks:
+            qb_by_team: Dict[str, float] = {}
+            for proj in blended.values():
+                if (proj.player.position or "").upper() == "QB" and proj.player.team:
+                    qb_by_team[proj.player.team] = max(
+                        qb_by_team.get(proj.player.team, 0.0), proj.points)
+            contexts = team_context.build_contexts(outlooks, qb_by_team)
+            blended = team_context.apply(blended, contexts, strength=team_bias)
 
     return value_players(blended, shape, positions=positions)
 
