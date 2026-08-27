@@ -18,6 +18,13 @@ dependencies = [
 [project.scripts]
 ff = "cli:main"
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+test = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.setuptools]
 packages = ["ff", "ff.sources", "ff.advice"]
 py-modules = ["cli"]

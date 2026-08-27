@@ -40,24 +40,86 @@ dropped.
 
 ## Commands
 
-Working now, no credentials required:
+Draft day:
 
 ```
-ff status                     # what is configured and working
-ff trending --pos RB WR       # league-wide add/drop velocity
-ff trending --drops --hours 48
-ff player "Ja'Marr Chase"
+ff draft start --teams 10 --pick 4   # begin, with your slot
+ff draft take "Player Name"          # someone else picked
+ff draft mine "Player Name"          # you picked
+ff draft now                         # best available for THIS pick
+ff draft export                      # write your team to roster.txt
+```
+
+In season:
+
+```
+ff board --scarcity        # draft board plus positional cliffs
+ff lineup                  # optimal starters, injury-discounted
+ff waivers                 # targets ranked by lineup improvement
+ff trade --give "A" --get "B"
+ff podcasts --fetch --injury --quotes
+```
+
+Setup and inspection:
+
+```
+ff status                  # what is configured and working
+ff league-setup --teams 10 --ppr 0.5 --slots "QB:1,RB:2,WR:2,TE:1,W/R/T:2,K:1,DST:1,BN:6"
+ff fp-check                # what your FantasyPros key unlocks
+ff player "Name"
+ff trending --pos RB WR
 ```
 
 After Yahoo approval (see `SETUP.md`):
 
 ```
-ff auth                       # browser OAuth, token stored 0600
+ff auth
 ff leagues
 ff use <league_key>
-ff league                     # settings and scoring, read from your league
+ff league                  # real settings replace the manual ones
 ff roster
 ```
+
+## The projection ensemble
+
+Four sources, blended. Averaged projections beat every individual source in
+published accuracy studies, so the architecture optimizes for adding sources
+cheaply rather than perfecting one model.
+
+| Source | Weight | Contributes |
+|---|---|---|
+| FantasyPros consensus | 0.40 | 130+ experts; also covers K and DST |
+| Expected points (ffopportunity) | 0.25 | Regression signal from opportunity |
+| Historical production | 0.20 | Actual output under your scoring |
+| Market prior | 0.15 | Rookies and changed situations |
+
+Without a FantasyPros key the other three renormalize to 1.00 rather than
+silently losing 40% of the blend.
+
+## Things worth knowing
+
+**Injury discounts are measured, not assumed.** Joining three seasons of NFL
+injury reports against whether the player actually recorded a stat line:
+Questionable players appear **58%** of the time, not the ~75% folklore assumes,
+and produce 93% of their season average when they do. A Questionable tag is
+worth ~56% of a projection; Questionable plus did-not-practice, 47%.
+
+**Lineups are solved, not filled greedily.** Flex eligibility sets overlap
+without nesting -- `W/R` and `W/T` both take receivers, neither contains the
+other -- so greedy slot-filling strands points on your bench. Solved as
+maximum-weight bipartite matching and verified exact against brute force.
+
+**Waivers and trades are judged by lineup improvement.** Bench points do not
+score. A 14-ppg quarterback is worth zero to a team already starting a 20-ppg
+one, and a 2-for-1 consolidation can win while losing on raw totals.
+
+## Tests
+
+```
+.venv/bin/python -m pytest tests/ -q
+```
+
+32 tests, no network or API keys required.
 
 ## Notes on the data
 
