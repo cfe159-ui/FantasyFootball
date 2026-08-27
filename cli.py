@@ -258,6 +258,27 @@ def main():
     p_fp.add_argument("--season", type=int)
     p_fp.set_defaults(fn=cmd_fp_check)
 
+    p_pod = sub.add_parser("podcasts",
+                           help="what fantasy podcasts said about your players")
+    p_pod.add_argument("--fetch", action="store_true",
+                       help="download and transcribe recent episodes")
+    p_pod.add_argument("--days", type=int, default=7)
+    p_pod.add_argument("--per-show", type=int, default=2)
+    p_pod.add_argument("--limit-episodes", type=int, default=6)
+    p_pod.add_argument("--max-minutes", type=int, default=70,
+                       help="skip episodes longer than this")
+    p_pod.add_argument("--model", default="base",
+                       choices=["tiny", "base", "small", "medium"])
+    p_pod.add_argument("--force", action="store_true", help="re-transcribe")
+    p_pod.add_argument("--player", nargs="*", help="focus on one player")
+    p_pod.add_argument("--all", action="store_true",
+                       help="track all relevant players, not just your roster")
+    p_pod.add_argument("--quotes", action="store_true", help="print passages")
+    p_pod.add_argument("--injury", action="store_true",
+                       help="only availability-related mentions")
+    p_pod.add_argument("--limit", type=int, default=20)
+    p_pod.set_defaults(fn=cmd_podcasts)
+
     args = parser.parse_args()
     try:
         args.fn(args)
@@ -570,3 +591,92 @@ def cmd_fp_check(args):
         else:
             table.add_row(r["endpoint"], "[red]failed[/red]", "-", r["error"])
     console.print(table)
+
+
+def cmd_podcasts(args):
+    """Ingest recent fantasy podcasts and surface what was said about players."""
+    from ff.model.mentions import find_mentions, summarize
+    from ff.sources import podcasts
+
+    universe = _universe()
+
+    if args.fetch:
+        with console.status("Resolving podcast feeds..."):
+            feeds = podcasts.discover_feeds()
+        console.print(f"[dim]{len(feeds)} feeds resolved[/dim]")
+        episodes = []
+        for show, url in feeds.items():
+            try:
+                episodes.extend(podcasts.recent_episodes(url, show, days=args.days,
+                                                         limit=args.per_show))
+            except Exception:  # noqa: BLE001 - one bad feed must not stop the rest
+                console.print(f"[yellow]feed unavailable: {show[:40]}[/yellow]")
+        episodes = [e for e in episodes if e.duration_seconds]
+        episodes.sort(key=lambda e: e.duration_seconds or 0)
+        if args.max_minutes:
+            episodes = [e for e in episodes
+                        if (e.duration_seconds or 0) <= args.max_minutes * 60]
+        episodes = episodes[: args.limit_episodes]
+
+        total_min = sum(e.duration_seconds or 0 for e in episodes) / 60
+        console.print(f"[dim]{len(episodes)} episodes, {total_min:.0f} min of audio. "
+                      f"Transcribing at roughly 10-15x real time.[/dim]\n")
+        for i, ep in enumerate(episodes, 1):
+            if podcasts.transcript_path(ep).exists() and not args.force:
+                console.print(f"  [dim]{i}/{len(episodes)} cached: {ep.title[:56]}[/dim]")
+                continue
+            console.print(f"  {i}/{len(episodes)} {ep.show[:26]} - {ep.title[:44]} "
+                          f"({(ep.duration_seconds or 0)//60}min)")
+            try:
+                path = podcasts.download(ep)
+                podcasts.transcribe(ep, path, model_size=args.model, force=args.force)
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"     [yellow]failed: {str(exc)[:80]}[/yellow]")
+
+    transcripts = podcasts.load_transcripts()
+    if not transcripts:
+        console.print("[yellow]No transcripts yet.[/yellow] "
+                      "Run [bold]ff podcasts --fetch[/bold] first.")
+        raise SystemExit(1)
+
+    # Who to look for: your roster, or anyone relevant.
+    roster, _ = _load_local_roster(universe)
+    if args.player:
+        target = universe.resolve(" ".join(args.player))
+        if not target:
+            console.print(f"[red]No match for '{' '.join(args.player)}'[/red]")
+            raise SystemExit(1)
+        players = [target]
+    elif roster and not args.all:
+        players = roster
+    else:
+        players = [p for p in universe.filter(["QB", "RB", "WR", "TE"])
+                   if p.search_rank is not None and p.search_rank < 400]
+
+    mentions = find_mentions(transcripts, players)
+    if args.injury:
+        mentions = [m for m in mentions if m.injury_related]
+
+    console.print(f"[dim]{len(transcripts)} transcripts | {len(players)} players "
+                  f"tracked | {len(mentions)} mentions[/dim]\n")
+
+    if args.quotes or args.player:
+        for m in mentions[: args.limit]:
+            tags = " ".join(t for t, v in (("injury", m.injury_related),
+                                           ("opinion", m.opinion_related)) if v)
+            console.print(f"[bold]{m.player.name}[/bold] - {m.show} [{m.clock}]"
+                          f"{'  [yellow]' + tags + '[/yellow]' if tags else ''}")
+            console.print(f"  [dim]{m.context}[/dim]\n")
+    else:
+        table = Table(title="Podcast mentions")
+        for col in ("player", "pos", "mentions", "injury", "opinion", "shows"):
+            table.add_column(col)
+        for name, d in sorted(summarize(mentions).items(),
+                              key=lambda kv: -kv[1]["total"])[: args.limit]:
+            table.add_row(name, d["player"].position or "", str(d["total"]),
+                          str(d["injury"]), str(d["opinion"]), str(len(d["shows"])))
+        console.print(table)
+        console.print("[dim]Add --quotes to read the actual passages, "
+                      "--injury to filter to availability talk.[/dim]")
+    console.print("[dim]Transcripts are local only and gitignored - "
+                  "podcast audio is copyrighted, do not commit or redistribute.[/dim]")
