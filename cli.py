@@ -279,6 +279,35 @@ def main():
     p_pod.add_argument("--limit", type=int, default=20)
     p_pod.set_defaults(fn=cmd_podcasts)
 
+    p_dr = sub.add_parser("draft", help="live draft assistant")
+    dsub = p_dr.add_subparsers(dest="draft_command", required=True)
+
+    d_start = dsub.add_parser("start", help="begin a draft")
+    d_start.add_argument("--teams", type=int, default=10)
+    d_start.add_argument("--pick", type=int, default=1, help="your first-round slot")
+    d_start.add_argument("--rounds", type=int, default=16)
+    d_start.add_argument("--linear", action="store_true", help="non-snake draft")
+    d_start.set_defaults(fn=cmd_draft_start)
+
+    d_take = dsub.add_parser("take", help="record a pick by someone else")
+    d_take.add_argument("name", nargs="+")
+    d_take.set_defaults(fn=cmd_draft_take)
+
+    d_mine = dsub.add_parser("mine", help="record your own pick")
+    d_mine.add_argument("name", nargs="+")
+    d_mine.set_defaults(fn=cmd_draft_mine)
+
+    d_now = dsub.add_parser("now", help="recommendations for the current pick")
+    d_now.add_argument("--limit", type=int, default=12)
+    d_now.add_argument("--season", type=int)
+    d_now.add_argument("--teams", type=int)
+    d_now.add_argument("--ppr", type=float)
+    d_now.set_defaults(fn=cmd_draft_now)
+
+    dsub.add_parser("undo", help="undo the last pick").set_defaults(fn=cmd_draft_undo)
+    dsub.add_parser("roster", help="show your picks").set_defaults(fn=cmd_draft_roster)
+    dsub.add_parser("export", help="write your picks to roster.txt").set_defaults(fn=cmd_draft_export)
+
     args = parser.parse_args()
     try:
         args.fn(args)
@@ -680,3 +709,154 @@ def cmd_podcasts(args):
                       "--injury to filter to availability talk.[/dim]")
     console.print("[dim]Transcripts are local only and gitignored - "
                   "podcast audio is copyrighted, do not commit or redistribute.[/dim]")
+
+
+def _draft_state_or_exit():
+    from ff.advice.draftroom import DraftState
+
+    state = DraftState.load()
+    if state is None:
+        console.print("[red]No draft in progress.[/red] Start one with "
+                      "[bold]ff draft start --teams 10 --pick 4[/bold]")
+        raise SystemExit(1)
+    return state
+
+
+def cmd_draft_start(args):
+    from ff.advice.draftroom import DraftState
+
+    state = DraftState(teams=args.teams, my_pick=args.pick, rounds=args.rounds,
+                       snake=not args.linear)
+    state.save()
+    rnd, slot = state.round_and_slot()
+    console.print(f"[green]Draft started.[/green] {state.teams} teams, "
+                  f"{'snake' if state.snake else 'linear'}, your slot #{state.my_pick}.")
+    console.print(f"[dim]Pick 1 is round {rnd}, slot {slot}. "
+                  f"Mark picks with [bold]ff draft take \"Name\"[/bold] and your own "
+                  f"with [bold]ff draft mine \"Name\"[/bold].[/dim]")
+
+
+def _record_pick(args, mine: bool):
+    universe = _universe()
+    state = _draft_state_or_exit()
+    name = " ".join(args.name)
+    player = universe.resolve(name)
+    if not player:
+        console.print(f"[red]No match for '{name}'.[/red]")
+        raise SystemExit(1)
+    if (player.key in state.taken_keys):
+        console.print(f"[yellow]{player.name} is already off the board.[/yellow]")
+        raise SystemExit(1)
+    pick_no = state.pick_number()
+    rnd, slot = state.round_and_slot()
+    state.taken.append({"name": player.name, "pos": player.position,
+                        "team": player.team, "mine": mine, "pick": pick_no})
+    state.save()
+    who = "[green]YOU[/green]" if mine else "someone"
+    console.print(f"Pick {pick_no} (R{rnd}.{slot:02d}): {who} took "
+                  f"[bold]{player.name}[/bold] ({player.position}-{player.team})")
+    if state.is_my_turn():
+        console.print("[green]You are on the clock.[/green] Run [bold]ff draft now[/bold]")
+    else:
+        console.print(f"[dim]{state.picks_until_mine()} picks until you are up.[/dim]")
+
+
+def cmd_draft_take(args):
+    _record_pick(args, mine=False)
+
+
+def cmd_draft_mine(args):
+    _record_pick(args, mine=True)
+
+
+def cmd_draft_undo(args):
+    state = _draft_state_or_exit()
+    if not state.taken:
+        console.print("[yellow]Nothing to undo.[/yellow]")
+        return
+    last = state.taken.pop()
+    state.save()
+    console.print(f"[yellow]Undid:[/yellow] {last['name']} (pick {last.get('pick')})")
+
+
+def cmd_draft_now(args):
+    from ff.advice.draft import build_board
+    from ff.advice.draftroom import (positional_runs, rank_candidates,
+                                     roster_needs)
+
+    universe = _universe()
+    state = _draft_state_or_exit()
+    shape, rules, origin = _league_shape_and_rules(args)
+    shape.num_teams = state.teams
+    season = int(args.season or sleeper.nfl_state().get("season") or 2026)
+
+    with console.status("Building board..."):
+        board = build_board(universe, shape, rules, season)
+        candidates = rank_candidates(board, state, shape, universe, limit=args.limit)
+
+    rnd, slot = state.round_and_slot()
+    header = (f"Pick {state.pick_number()} - round {rnd}, slot {slot}"
+              f"{'  [green]YOU ARE UP[/green]' if state.is_my_turn() else ''}")
+    console.print(header)
+    needs = roster_needs(state, shape, universe)
+    unfilled = ", ".join(f"{p}x{n}" for p, n in needs.items() if n > 0) or "starters full"
+    console.print(f"[dim]{origin} | your roster: {len(state.my_roster_names)} "
+                  f"players | still needed: {unfilled}[/dim]")
+
+    runs = positional_runs(state)
+    if runs:
+        hot = ", ".join(f"{p} x{n}" for p, n in sorted(runs.items(), key=lambda kv: -kv[1])
+                        if n >= 3)
+        if hot:
+            console.print(f"[yellow]Run in progress (last 8 picks): {hot}[/yellow]")
+    console.print()
+
+    table = Table(title="Best available")
+    for col in ("#", "player", "pos", "team", "VOR", "+lineup", "score",
+                "tier left", "lasts?"):
+        table.add_column(col)
+    for i, c in enumerate(candidates, 1):
+        warn = "[red]" if c.tier_remaining <= 2 else ""
+        end = "[/red]" if warn else ""
+        survival = ("[green]likely[/green]" if c.survival > 0.6 else
+                    "[yellow]maybe[/yellow]" if c.survival > 0.3 else "[red]no[/red]")
+        table.add_row(str(i), c.player.name, c.player.position or "",
+                      c.player.team or "", f"{c.valued.vor:+.0f}",
+                      f"{c.lineup_gain * 16:+.0f}", f"{c.score:.0f}",
+                      f"{warn}{c.tier_remaining}{end}", survival)
+    console.print(table)
+    console.print("[dim]score = value over replacement plus how much he improves your "
+                  "actual starting lineup. 'lasts?' estimates whether he survives to "
+                  "your next pick.[/dim]")
+
+
+def cmd_draft_roster(args):
+    universe = _universe()
+    state = _draft_state_or_exit()
+    if not state.my_roster_names:
+        console.print("[yellow]You have not drafted anyone yet.[/yellow]")
+        return
+    table = Table(title="Your draft picks")
+    for col in ("pick", "player", "pos", "team"):
+        table.add_column(col)
+    for t in state.taken:
+        if t.get("mine"):
+            table.add_row(str(t.get("pick", "")), t["name"], t.get("pos") or "",
+                          t.get("team") or "")
+    console.print(table)
+    console.print("[dim]Export to your lineup file with "
+                  "[bold]ff draft export[/bold] when the draft ends.[/dim]")
+
+
+def cmd_draft_export(args):
+    from ff.util import DATA_DIR
+
+    state = _draft_state_or_exit()
+    names = state.my_roster_names
+    if not names:
+        console.print("[yellow]Nothing to export.[/yellow]")
+        return
+    path = DATA_DIR / "roster.txt"
+    path.write_text("\n".join(names) + "\n")
+    console.print(f"[green]Wrote {len(names)} players to {path}[/green]")
+    console.print("[dim]ff lineup and ff waivers now use your real team.[/dim]")

@@ -29,6 +29,7 @@ ITUNES_SEARCH = "https://itunes.apple.com/search"
 
 # Shows worth ingesting, matched against the Apple directory by substring.
 DEFAULT_SHOWS = (
+    "The Ringer Fantasy Football Show",
     "Fantasy Footballers",
     "Fantasy Football Today",
     "Fantasy Focus Football",
@@ -55,20 +56,40 @@ class Episode:
 
 
 def discover_feeds(shows: Iterable[str] = DEFAULT_SHOWS,
-                   limit: int = 40) -> Dict[str, str]:
-    """Resolve show names to RSS feed URLs via Apple's public directory."""
-    payload = get_json(ITUNES_SEARCH, params={
-        "term": "fantasy football", "entity": "podcast", "limit": limit})
-    wanted = [s.lower() for s in shows]
+                   limit: int = 10) -> Dict[str, str]:
+    """Resolve show names to RSS feed URLs via Apple's public directory.
+
+    Each show is searched by name rather than filtering one generic "fantasy
+    football" query, which silently missed shows whose titles rank below the
+    result cap -- The Ringer's show among them.
+    """
     feeds: Dict[str, str] = {}
-    for result in payload.get("results", []):
-        name = result.get("collectionName") or ""
-        feed = result.get("feedUrl")
-        if not feed:
+    for show in shows:
+        try:
+            payload = get_json(ITUNES_SEARCH, params={
+                "term": show, "entity": "podcast", "limit": limit})
+        except Exception:  # noqa: BLE001 - directory lookup is best-effort
             continue
-        if any(w in name.lower() for w in wanted):
-            feeds.setdefault(name, feed)
+        target = show.lower()
+        for result in payload.get("results", []):
+            name = result.get("collectionName") or ""
+            feed = result.get("feedUrl")
+            if not feed:
+                continue
+            # Accept an exact-ish title match in either direction.
+            low = name.lower()
+            if target in low or low in target or _token_overlap(target, low) >= 0.6:
+                feeds.setdefault(name, feed)
+                break
     return feeds
+
+
+def _token_overlap(a: str, b: str) -> float:
+    ta = {t for t in re.split(r"\W+", a) if len(t) > 2}
+    tb = {t for t in re.split(r"\W+", b) if len(t) > 2}
+    if not ta:
+        return 0.0
+    return len(ta & tb) / len(ta)
 
 
 def recent_episodes(feed_url: str, show: str, days: int = 7,

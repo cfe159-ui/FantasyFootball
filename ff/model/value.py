@@ -57,6 +57,12 @@ class LeagueShape:
         return self.slots.get("BN", 0)
 
     @property
+    def starting_slots(self) -> Dict[str, int]:
+        """Slots that score points, excluding bench and IR."""
+        return {k: v for k, v in self.slots.items()
+                if k.upper() not in ("BN", "IR") and v > 0}
+
+    @property
     def is_superflex(self) -> bool:
         return any(pos in self.slots and self.slots[pos] > 0
                    for pos in ("SUPERFLEX", "OP", "Q/W/R/T"))

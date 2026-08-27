@@ -14,3 +14,4 @@ dist/
 data/roster.txt
 data/audio/
 data/transcripts/
+data/draft.json
