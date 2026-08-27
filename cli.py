@@ -308,6 +308,14 @@ def main():
     dsub.add_parser("roster", help="show your picks").set_defaults(fn=cmd_draft_roster)
     dsub.add_parser("export", help="write your picks to roster.txt").set_defaults(fn=cmd_draft_export)
 
+    p_tr2 = sub.add_parser("trade", help="evaluate a proposed trade")
+    p_tr2.add_argument("--give", nargs="*", help="players you send")
+    p_tr2.add_argument("--get", nargs="*", help="players you receive")
+    p_tr2.add_argument("--season", type=int)
+    p_tr2.add_argument("--teams", type=int)
+    p_tr2.add_argument("--ppr", type=float)
+    p_tr2.set_defaults(fn=cmd_trade)
+
     args = parser.parse_args()
     try:
         args.fn(args)
@@ -860,3 +868,79 @@ def cmd_draft_export(args):
     path.write_text("\n".join(names) + "\n")
     console.print(f"[green]Wrote {len(names)} players to {path}[/green]")
     console.print("[dim]ff lineup and ff waivers now use your real team.[/dim]")
+
+
+def cmd_trade(args):
+    from ff.advice.trades import evaluate
+    from ff.sources import nflverse
+
+    universe = _universe()
+    shape, rules, origin = _league_shape_and_rules(args)
+    season = int(args.season or sleeper.nfl_state().get("season") or 2026)
+
+    roster, path = _load_local_roster(universe)
+    if not roster:
+        console.print(f"[red]No roster found.[/red] Create {path} or run "
+                      "[bold]ff draft export[/bold].")
+        raise SystemExit(1)
+
+    def resolve_all(names, label):
+        out = []
+        for raw in names:
+            p = universe.resolve(raw)
+            if not p:
+                console.print(f"[red]No match for '{raw}' in --{label}[/red]")
+                raise SystemExit(1)
+            out.append(p)
+        return out
+
+    giving = resolve_all(args.give or [], "give")
+    getting = resolve_all(args.get or [], "get")
+    if not giving and not getting:
+        console.print("[red]Specify --give and/or --get.[/red]")
+        raise SystemExit(1)
+
+    with console.status("Projecting..."):
+        projections = _projection_table(universe, shape, rules, season)
+        byes = nflverse.bye_weeks(season) or nflverse.bye_weeks(season - 1)
+
+    def ppg(p):
+        v = projections.get(p.key)
+        return v.projection.per_game if v else 0.0
+
+    verdict = evaluate([(p, ppg(p)) for p in roster],
+                       [(p, ppg(p)) for p in giving],
+                       [(p, ppg(p)) for p in getting],
+                       shape, bye_weeks=byes)
+
+    console.print(f"[dim]{origin}[/dim]\n")
+    console.print(f"[bold]You give:[/bold] " +
+                  ", ".join(f"{p.name} ({ppg(p):.1f})" for p in giving))
+    console.print(f"[bold]You get:[/bold]  " +
+                  ", ".join(f"{p.name} ({ppg(p):.1f})" for p in getting))
+    console.print()
+
+    table = Table(show_header=False, box=None)
+    table.add_row("Raw points out / in",
+                  f"{verdict.outgoing_value:.1f}  ->  {verdict.incoming_value:.1f}")
+    table.add_row("Starting lineup",
+                  f"{verdict.lineup_before:.1f}  ->  {verdict.lineup_after:.1f} "
+                  f"({verdict.lineup_after - verdict.lineup_before:+.1f}/week)")
+    if verdict.depth_penalty:
+        table.add_row("Depth cost", f"-{verdict.depth_penalty:.2f}/week")
+    colour = ("green" if verdict.net > 0.3 else
+              "yellow" if verdict.net > -0.3 else "red")
+    table.add_row("[bold]Net[/bold]",
+                  f"[{colour}]{verdict.net:+.2f} per week - {verdict.verdict.upper()}[/{colour}]")
+    console.print(table)
+
+    if verdict.starters_gained:
+        console.print(f"\n[green]Enters your lineup:[/green] "
+                      f"{', '.join(verdict.starters_gained)}")
+    if verdict.starters_lost:
+        console.print(f"[yellow]Leaves your lineup:[/yellow] "
+                      f"{', '.join(verdict.starters_lost)}")
+    for note in verdict.notes:
+        console.print(f"[dim]- {note}[/dim]")
+    console.print("\n[dim]Judged by change to your optimal starting lineup, not raw "
+                  "point totals: bench points do not score.[/dim]")
