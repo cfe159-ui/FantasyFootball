@@ -93,3 +93,72 @@ for a handful of games per week.
 Weights are configurable — `DEFAULT_WEIGHTS` in `ff/advice/draft.py`. Adding a
 strong paid source should shift weight away from the historical baseline, not
 replace it: the blend is the point.
+
+---
+
+# How to actually get access
+
+Verified live. Ordered by value per unit of hassle.
+
+## 1. ffopportunity — expected fantasy points (free, no signup)
+
+The single best free addition. It models how many fantasy points a player
+*should* have scored given his opportunity — carries, targets, air yards, field
+position. The gap between actual and expected is the most reliable regression
+signal in fantasy: players far above expected tend to come back down.
+
+Published as parquet on GitHub releases, exactly like nflverse. No key, no
+account:
+
+```
+https://github.com/ffverse/ffopportunity/releases/download/latest-data/ep_pbp_pass_2025.parquet
+https://github.com/ffverse/ffopportunity/releases/download/latest-data/ep_pbp_rush_2025.parquet
+```
+
+182 assets covering 2006 onward, in `.parquet`, `.csv`, and `.rds`. Drop-in for
+`ff/sources/nflverse.py`, which already reads this exact release pattern.
+
+## 2. ESPN projections (free, no key)
+
+ESPN's fantasy API is undocumented but open. This returns player data including
+ESPN's own projections:
+
+```
+https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/2025/players
+  ?scoringPeriodId=1&view=kona_player_info
+```
+
+Confirmed returning HTTP 200 unauthenticated. Unofficial, so treat it as a
+source that may vanish — which is exactly why it belongs in an ensemble rather
+than as a primary.
+
+## 3. Open-Meteo — weather (free, no key, no signup)
+
+```
+https://api.open-meteo.com/v1/forecast?latitude=42.77&longitude=-78.78&hourly=wind_speed_10m
+```
+
+Confirmed working with no credentials. Sustained wind over ~15mph measurably
+suppresses passing and kicking. You need a stadium coordinate table (32 rows)
+and to skip domes.
+
+## 4. FantasyPros — the one worth paying for
+
+$8.99/month, bundled with their HOF subscription. Consensus of 130+ experts,
+which is the thing that keeps winning accuracy studies, plus external ID
+cross-references that would strengthen player resolution here.
+
+1. Create a FantasyPros account (or sign in) at <https://www.fantasypros.com/>
+2. Subscribe to HOF — API access is bundled, not sold separately
+3. Request a key at <https://secure.fantasypros.com/api-keys/request/>
+   (redirects to login if you are not signed in)
+4. Send it as the `x-api-key` header on every request
+
+The free tier returns **sample data for non-production use**. It is for
+prototyping against the schema, not for running your season.
+
+## What I would actually do
+
+Add **ffopportunity** first. It is free, it needs no account, it loads through
+code that already exists here, and expected-points regression catches the
+mistakes that consensus rankings make. Only then consider paying FantasyPros.
