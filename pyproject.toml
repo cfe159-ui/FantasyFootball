@@ -13,18 +13,24 @@ dependencies = [
     "pyarrow>=14",
     "python-dotenv>=1.0",
     "rich>=13.0",
+    "scipy>=1.10",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
 ]
+
+[project.optional-dependencies]
+desktop = ["pywebview>=5.0"]
+podcasts = ["faster-whisper>=1.0", "feedparser>=6.0"]
 
 [project.scripts]
 ff = "cli:main"
 
-[project.optional-dependencies]
-dev = ["pytest>=8.0"]
-test = ["pytest>=8.0"]
+[tool.setuptools.package-data]
+"ff.web" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.setuptools]
-packages = ["ff", "ff.sources", "ff.advice"]
+packages = ["ff", "ff.sources", "ff.advice", "ff.model", "ff.web"]
 py-modules = ["cli"]

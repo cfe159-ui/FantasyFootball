@@ -327,6 +327,12 @@ def main():
     p_tm.add_argument("--ppr", type=float)
     p_tm.set_defaults(fn=cmd_teams)
 
+    p_app = sub.add_parser("app", help="launch the desktop app")
+    p_app.add_argument("--browser", action="store_true",
+                       help="open in your browser instead of a native window")
+    p_app.add_argument("--port", type=int)
+    p_app.set_defaults(fn=cmd_app)
+
     args = parser.parse_args()
     try:
         args.fn(args)
@@ -1002,3 +1008,13 @@ def cmd_teams(args):
                   "and receivers. Sized from measured efficiency edges "
                   "(RB +10.8%, WR +8.7% team; WR +11.8% QB, top vs bottom quartile) "
                   "and halved, since consensus already prices some of it.[/dim]")
+
+
+def cmd_app(args):
+    """Launch the desktop app."""
+    from ff.web.app import run_browser, run_window
+
+    if args.browser:
+        run_browser(port=args.port)
+    else:
+        run_window(port=args.port)

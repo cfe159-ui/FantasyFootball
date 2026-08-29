@@ -349,3 +349,37 @@ def test_spread_converts_to_sensible_win_probability():
     assert _win_probability(-7.0) > 0.65      # seven-point favourite
     assert _win_probability(7.0) < 0.35
     assert _win_probability(-14.0) > _win_probability(-7.0)
+
+
+# --------------------------------------------------------------------------
+# Desktop app wiring
+# --------------------------------------------------------------------------
+
+def test_api_exposes_every_view_the_ui_needs():
+    from ff.web.server import app as api
+
+    paths = {r.path for r in api.routes if hasattr(r, "path")}
+    for required in ("/api/status", "/api/board", "/api/lineup", "/api/waivers",
+                     "/api/trade", "/api/teams", "/api/roster", "/api/search",
+                     "/api/podcasts", "/api/draft", "/api/draft/start",
+                     "/api/draft/pick", "/api/draft/board"):
+        assert required in paths, f"missing endpoint {required}"
+
+
+def test_static_assets_are_packaged():
+    from ff.web.server import STATIC_DIR
+
+    for name in ("index.html", "app.css", "app.js"):
+        asset = STATIC_DIR / name
+        assert asset.exists() and asset.stat().st_size > 0, f"missing {name}"
+
+
+def test_free_port_returns_a_usable_port():
+    import socket
+
+    from ff.web.app import free_port
+
+    port = free_port()
+    assert 1024 < port < 65536
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", port))   # must actually be bindable

@@ -38,6 +38,23 @@ dropped.
 | `ff/config.py` | Which league you're managing |
 | `cli.py` | Command line entry point |
 
+## Desktop app
+
+```
+ff app                     # native macOS window
+ff app --browser           # or in your browser
+python make_app.py         # build a double-clickable .app bundle
+```
+
+`make_app.py` writes `dist/Fantasy Agent.app`, which you can drag into
+/Applications. It launches this project's venv directly, so editing the source
+changes the app on next launch -- there is nothing to rebuild.
+
+Eight views: draft room, my team, rankings, waivers, trade, team outlook,
+podcasts, settings. The projection board is computed once per league
+configuration and cached in the server process, so the first load takes a few
+seconds and everything after is instant.
+
 ## Commands
 
 Draft day:
@@ -130,7 +147,7 @@ one, and a 2-for-1 consolidation can win while losing on raw totals.
 .venv/bin/python -m pytest tests/ -q
 ```
 
-38 tests, no network or API keys required.
+41 tests, no network or API keys required.
 
 ## Notes on the data
 
