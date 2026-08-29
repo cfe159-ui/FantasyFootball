@@ -444,8 +444,11 @@ class DraftPick(BaseModel):
 
 
 def _draft_json(state: DraftState) -> Dict:
+    """Shared draft payload. `active` belongs here so every endpoint that
+    returns draft state carries it -- the UI branches on that flag."""
     rnd, slot = state.round_and_slot()
     return {
+        "active": True,
         "teams": state.teams, "my_pick": state.my_pick, "rounds": state.rounds,
         "pick_number": state.pick_number(), "round": rnd, "slot": slot,
         "my_turn": state.is_my_turn(),
@@ -460,7 +463,7 @@ def draft_status() -> Dict:
     state = DraftState.load()
     if state is None:
         return {"active": False}
-    return {"active": True, **_draft_json(state)}
+    return _draft_json(state)
 
 
 @app.post("/api/draft/start")
@@ -468,7 +471,7 @@ def draft_start(req: DraftStart) -> Dict:
     state = DraftState(teams=req.teams, my_pick=req.my_pick,
                        rounds=req.rounds, snake=req.snake)
     state.save()
-    return {"active": True, **_draft_json(state)}
+    return _draft_json(state)
 
 
 @app.post("/api/draft/pick")
@@ -486,7 +489,7 @@ def draft_pick(req: DraftPick) -> Dict:
                         "team": player.team, "mine": req.mine,
                         "pick": state.pick_number()})
     state.save()
-    return {"active": True, **_draft_json(state)}
+    return _draft_json(state)
 
 
 @app.post("/api/draft/undo")
@@ -496,7 +499,7 @@ def draft_undo() -> Dict:
         raise HTTPException(400, "Nothing to undo.")
     state.taken.pop()
     state.save()
-    return {"active": True, **_draft_json(state)}
+    return _draft_json(state)
 
 
 @app.get("/api/draft/board")
@@ -571,7 +574,17 @@ def podcast_mentions(limit: int = 40, injury_only: bool = False,
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    # The shell and its assets are served from disk and edited in place, so
+    # never let a browser hold a stale copy.
+    return FileResponse(STATIC_DIR / "index.html",
+                        headers={"Cache-Control": "no-store"})
 
 
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+class NoCacheStatic(StaticFiles):
+    def file_response(self, *args, **kwargs):  # type: ignore[override]
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+
+app.mount("/static", NoCacheStatic(directory=str(STATIC_DIR)), name="static")

@@ -57,6 +57,45 @@
     <section class="viewport">
       <!-- DRAFT -->
       <div class="view" id="view-draft">
+        <div class="console">
+          <div class="orb-wrap">
+            <svg class="orb" viewBox="0 0 300 300" aria-hidden="true">
+              <defs>
+                <radialGradient id="coreGrad">
+                  <stop offset="0%" stop-color="var(--glow-hot)"/>
+                  <stop offset="55%" stop-color="var(--glow)"/>
+                  <stop offset="100%" stop-color="transparent"/>
+                </radialGradient>
+                <filter id="soften"><feGaussianBlur stdDeviation="3"/></filter>
+              </defs>
+              <g class="ring ring-outer">
+                <circle cx="150" cy="150" r="128" class="ring-line"/>
+                <g class="ticks" id="orb-ticks"></g>
+              </g>
+              <g class="ring ring-mid">
+                <circle cx="150" cy="150" r="104" class="ring-dashed"/>
+              </g>
+              <g class="ring ring-inner">
+                <circle cx="150" cy="150" r="82" class="ring-arc"/>
+              </g>
+              <g id="orb-bars"></g>
+              <circle cx="150" cy="150" r="44" fill="url(#coreGrad)" class="core" filter="url(#soften)"/>
+              <circle cx="150" cy="150" r="26" class="core-edge"/>
+            </svg>
+            <div class="orb-label" id="orb-label">STANDBY</div>
+          </div>
+          <div class="console-readout">
+            <div class="readout-line" id="orb-message">Draft assistant ready.</div>
+            <div class="readout-sub" id="orb-sub">Start a draft and I will track the board as it empties.</div>
+            <div class="console-actions">
+              <button id="mic-toggle" class="btn ghost mic">
+                <span class="mic-dot"></span> Enable microphone
+              </button>
+              <span class="muted small" id="mic-note">Audio stays on this machine.</span>
+            </div>
+          </div>
+        </div>
+
         <div id="draft-setup" class="card center-card hidden">
           <h2>Start your draft</h2>
           <p class="muted">Mark each pick as it happens and the board re-ranks for your roster.</p>
@@ -72,19 +111,19 @@
           <div class="draft-status card">
             <div class="ds-block">
               <div class="ds-label">Pick</div>
-              <div class="ds-value" id="d-pick">—</div>
+              <div class="ds-value" id="d-pick">&mdash;</div>
             </div>
             <div class="ds-block">
               <div class="ds-label">Round</div>
-              <div class="ds-value" id="d-round">—</div>
+              <div class="ds-value" id="d-round">&mdash;</div>
             </div>
             <div class="ds-block">
               <div class="ds-label">Until you</div>
-              <div class="ds-value" id="d-until">—</div>
+              <div class="ds-value" id="d-until">&mdash;</div>
             </div>
             <div class="ds-block grow">
               <div class="ds-label">Still needed</div>
-              <div class="ds-need" id="d-needs">—</div>
+              <div class="ds-need" id="d-needs">&mdash;</div>
             </div>
             <div class="ds-actions">
               <button id="d-undo" class="btn ghost">Undo</button>

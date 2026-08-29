@@ -127,7 +127,7 @@ async function loadDraft() {
   state.draft = d;
   $('#draft-setup').classList.toggle('hidden', !!d.active);
   $('#draft-live').classList.toggle('hidden', !d.active);
-  if (!d.active) return;
+  if (!d.active) { orbFromDraft(d); return; }
   renderDraftStatus(d);
   const box = $('#d-candidates');
   skeleton(box);
@@ -136,6 +136,7 @@ async function loadDraft() {
     state.draft = b;
     renderDraftStatus(b);
     renderCandidates(b);
+    orbFromDraft(b);
   } catch (e) { empty(box, e.message); }
 }
 
@@ -559,3 +560,200 @@ document.addEventListener('click', (e) => {
   try { await loadStatus(); } catch (e) { toast('Backend not reachable'); }
   show('draft');
 })();
+
+/* ============================================================
+   Assistant console
+   ------------------------------------------------------------
+   The orb is an in-app presence, not a live link to Claude: this
+   app runs entirely on your machine. It reacts to two real
+   signals -- your microphone level (analysed locally via Web
+   Audio, never recorded and never sent anywhere) and the state
+   of the draft board.
+   ============================================================ */
+
+const orb = {
+  el: null, bars: [], analyser: null, data: null, stream: null,
+  raf: null, level: 0, state: 'idle',
+  BAR_COUNT: 56, R_IN: 58, R_OUT: 74,
+};
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function svgEl(tag, attrs) {
+  // innerHTML on an SVG element is parsed by the HTML parser, which neither
+  // honours self-closing tags nor puts the result in the SVG namespace -- the
+  // elements silently nest and never render. Build them properly.
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
+  return el;
+}
+
+function buildOrb() {
+  orb.el = document.querySelector('.console');
+  if (!orb.el) return;
+
+  const ticks = document.getElementById('orb-ticks');
+  const barsG = document.getElementById('orb-bars');
+  if (!ticks || !barsG) return;
+
+  // Tick marks around the outer ring.
+  const TICKS = 60;
+  ticks.replaceChildren(...Array.from({ length: TICKS }, (_, i) => {
+    const a = (i / TICKS) * Math.PI * 2;
+    const long = i % 5 === 0;
+    const r1 = long ? 118 : 123, r2 = 128;
+    return svgEl('line', {
+      x1: (150 + Math.cos(a) * r1).toFixed(1),
+      y1: (150 + Math.sin(a) * r1).toFixed(1),
+      x2: (150 + Math.cos(a) * r2).toFixed(1),
+      y2: (150 + Math.sin(a) * r2).toFixed(1),
+      opacity: long ? 0.55 : 0.25,
+    });
+  }));
+
+  // Radial audio bars.
+  barsG.replaceChildren(...Array.from({ length: orb.BAR_COUNT },
+    () => svgEl('line', { x1: 0, y1: 0, x2: 0, y2: 0 })));
+  orb.bars = Array.from(barsG.children);
+  drawBars(0);
+}
+
+function drawBars(level, spectrum) {
+  const n = orb.BAR_COUNT;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 - Math.PI / 2;
+    // Idle: a slow travelling wave so the orb is alive without input.
+    const idle = 0.16 + 0.1 * Math.sin(i * 0.55 + Date.now() / 620);
+    const amp = spectrum
+      ? Math.max(idle, (spectrum[i % spectrum.length] / 255) * 1.25)
+      : idle;
+    const r1 = orb.R_IN;
+    const r2 = orb.R_IN + (orb.R_OUT - orb.R_IN) * Math.min(amp * (1 + level), 2.6);
+    const b = orb.bars[i];
+    if (!b) continue;
+    b.setAttribute('x1', (150 + Math.cos(a) * r1).toFixed(1));
+    b.setAttribute('y1', (150 + Math.sin(a) * r1).toFixed(1));
+    b.setAttribute('x2', (150 + Math.cos(a) * r2).toFixed(1));
+    b.setAttribute('y2', (150 + Math.sin(a) * r2).toFixed(1));
+    b.setAttribute('opacity', (0.35 + Math.min(amp, 1) * 0.55).toFixed(2));
+  }
+}
+
+function orbLoop() {
+  let spectrum = null;
+  if (orb.analyser) {
+    orb.analyser.getByteFrequencyData(orb.data);
+    // Mean of the speech-relevant low band, smoothed.
+    let sum = 0;
+    const band = Math.min(orb.data.length, 48);
+    for (let i = 0; i < band; i++) sum += orb.data[i];
+    const raw = sum / band / 255;
+    orb.level = orb.level * 0.75 + raw * 0.25;
+    spectrum = orb.data;
+    const core = document.querySelector('.core');
+    if (core) core.style.transform = `scale(${(1 + orb.level * 0.55).toFixed(3)})`;
+    setOrbState(orb.level > 0.06 ? 'listening' : orb.baseState || 'idle', true);
+  }
+  drawBars(orb.level, spectrum);
+  orb.raf = requestAnimationFrame(orbLoop);
+}
+
+function setOrbState(state, transient) {
+  if (!orb.el) return;
+  if (!transient) orb.baseState = state;
+  if (orb.state === state) return;
+  orb.state = state;
+  orb.el.dataset.state = state;
+  const label = document.getElementById('orb-label');
+  if (label) {
+    label.textContent = { idle: 'standby', listening: 'listening',
+      alert: 'your pick', warn: 'attention' }[state] || state;
+  }
+}
+
+function say(line, sub) {
+  const a = document.getElementById('orb-message');
+  const b = document.getElementById('orb-sub');
+  if (a && line != null) a.textContent = line;
+  if (b && sub != null) b.textContent = sub;
+}
+
+async function toggleMic() {
+  const btn = document.getElementById('mic-toggle');
+  const note = document.getElementById('mic-note');
+  if (orb.stream) {
+    orb.stream.getTracks().forEach((t) => t.stop());
+    orb.stream = null; orb.analyser = null; orb.level = 0;
+    btn.classList.remove('on');
+    btn.innerHTML = '<span class="mic-dot"></span> Enable microphone';
+    note.textContent = 'Audio stays on this machine.';
+    setOrbState(orb.baseState || 'idle');
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.72;
+    src.connect(analyser);
+    orb.stream = stream; orb.analyser = analyser;
+    orb.data = new Uint8Array(analyser.frequencyBinCount);
+    btn.classList.add('on');
+    btn.innerHTML = '<span class="mic-dot"></span> Microphone on';
+    note.textContent = 'Analysed locally — nothing is recorded or sent.';
+  } catch (err) {
+    note.textContent = `Microphone unavailable: ${err.name}. The orb still reacts to the draft.`;
+  }
+}
+
+/* Draft state drives what the assistant says and how it looks. */
+function orbFromDraft(d) {
+  if (!d || !d.active) {
+    setOrbState('idle');
+    say('Draft assistant ready.',
+        'Start a draft and I will track the board as it empties, flag positional runs, and tell you when a tier is about to break.');
+    return;
+  }
+  const top = (d.candidates || [])[0];
+  const runs = Object.entries(d.runs || {}).filter(([, n]) => n >= 3);
+  const thin = (d.candidates || []).find((c) => c.tier_remaining <= 2);
+
+  if (d.my_turn) {
+    setOrbState('alert');
+    say(top ? `Take ${top.name}.` : 'You are on the clock.',
+        top ? `${top.position} · ${top.team} — value over replacement ${signed(top.vor)}, `
+            + `adds ${signed(top.lineup_gain)} to your starting lineup. `
+            + (top.survival < 0.3 ? 'He will not last to your next pick.'
+               : 'He may still be there next round.')
+            : 'Pick from the board below.');
+    return;
+  }
+  if (runs.length) {
+    setOrbState('warn');
+    const [pos, n] = runs[0];
+    say(`${pos} run in progress.`,
+        `${n} of the last 8 picks were ${pos}s. ${d.picks_until_mine} picks until you are up — `
+        + `expect the tier to thin before then.`);
+    return;
+  }
+  if (thin) {
+    setOrbState('warn');
+    say(`${thin.position} tier is nearly gone.`,
+        `Only ${thin.tier_remaining} left at ${thin.name}'s tier. `
+        + `${d.picks_until_mine} picks until your turn.`);
+    return;
+  }
+  setOrbState('idle');
+  say(`${d.picks_until_mine} picks until you are up.`,
+      top ? `Best available is ${top.name} (${top.position}, ${top.team}).`
+          : 'Tracking the board.');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  buildOrb();
+  orbLoop();
+  const btn = document.getElementById('mic-toggle');
+  if (btn) btn.addEventListener('click', toggleMic);
+});

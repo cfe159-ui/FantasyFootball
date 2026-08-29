@@ -405,3 +405,34 @@ def test_warm_cache_does_not_start_twice():
         assert server._cache["warming"] is True
     finally:
         server._cache["warming"] = False
+
+
+def test_every_draft_endpoint_reports_active():
+    """The console branches on `active`; omitting it silently showed the idle state."""
+    import inspect
+
+    from ff.web import server
+
+    src = inspect.getsource(server._draft_json)
+    assert '"active": True' in src, "_draft_json must carry the active flag"
+
+
+def test_orb_markup_contains_no_html_breakout_tags():
+    """A <div> inside <svg> forces the HTML parser out of foreign content,
+    silently truncating the SVG at that point."""
+    from ff.web.server import STATIC_DIR
+
+    html = (STATIC_DIR / "index.html").read_text()
+    svg = html[html.index('<svg class="orb"'): html.index("</svg>") + 6]
+    for tag in ("div", "span", "p", "button", "input", "h1", "h2", "h3", "table"):
+        assert f"<{tag}" not in svg, f"<{tag}> inside <svg> breaks SVG parsing"
+
+
+def test_orb_builds_svg_nodes_with_namespace():
+    """innerHTML on an SVG element is parsed as HTML and never renders."""
+    from ff.web.server import STATIC_DIR
+
+    js = (STATIC_DIR / "app.js").read_text()
+    assert "createElementNS" in js
+    build = js[js.index("function buildOrb"): js.index("function drawBars")]
+    assert ".innerHTML" not in build, "buildOrb must not use innerHTML on SVG nodes"
