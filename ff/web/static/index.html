@@ -88,11 +88,15 @@
             <div class="readout-line" id="orb-message">Draft assistant ready.</div>
             <div class="readout-sub" id="orb-sub">Start a draft and I will track the board as it empties.</div>
             <div class="console-actions">
-              <button id="mic-toggle" class="btn ghost mic">
-                <span class="mic-dot"></span> Enable microphone
+              <button id="talk-toggle" class="btn primary mic">
+                <span class="mic-dot"></span> Start conversation
               </button>
-              <span class="muted small" id="mic-note">Audio stays on this machine.</span>
+              <button id="mic-toggle" class="btn ghost mic">
+                <span class="mic-dot"></span> Visualizer only
+              </button>
             </div>
+            <div class="muted small" id="mic-note">Speech is recognised by your browser; only the transcript is sent.</div>
+            <div id="transcript" class="transcript hidden"></div>
           </div>
         </div>
 

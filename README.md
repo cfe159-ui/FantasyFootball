@@ -55,6 +55,28 @@ podcasts, settings. The projection board is computed once per league
 configuration and cached in the server process, so the first load takes a few
 seconds and everything after is instant.
 
+## Talking to it
+
+With an `ANTHROPIC_API_KEY` in `.env`, the draft console holds a spoken
+conversation:
+
+    speech in   your browser's SpeechRecognition (only the transcript leaves)
+    reasoning   Claude Opus 5, with the live board as context
+    speech out  your browser's speechSynthesis
+
+There is no realtime or voice endpoint to connect to -- the Messages API is
+text in, text out -- so speech happens in the browser at both ends. Answers run
+at low effort with a 700-token ceiling and a system prompt demanding two or
+three sentences, because a spoken answer that rambles is worse than no answer
+while you are on the clock.
+
+Speech recognition needs Chrome or Safari; the native window's WKWebView may
+not expose it, in which case the console offers a text box instead. Run
+`ff app --browser` if you want the voice loop for certain.
+
+Without a key everything else works unchanged and the console falls back to
+draft-driven guidance.
+
 ## Commands
 
 Draft day:
@@ -147,7 +169,7 @@ one, and a 2-for-1 consolidation can win while losing on raw totals.
 .venv/bin/python -m pytest tests/ -q
 ```
 
-41 tests, no network or API keys required.
+50 tests, no network or API keys required.
 
 ## Notes on the data
 

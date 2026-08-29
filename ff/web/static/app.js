@@ -757,3 +757,227 @@ document.addEventListener('DOMContentLoaded', () => {
   const btn = document.getElementById('mic-toggle');
   if (btn) btn.addEventListener('click', toggleMic);
 });
+
+/* ============================================================
+   Voice loop
+   ------------------------------------------------------------
+   speech in   -- the browser's SpeechRecognition (local to the
+                  browser; only the resulting text leaves)
+   reasoning   -- POST /api/assistant, which calls Claude with
+                  the live draft board as context
+   speech out  -- the browser's speechSynthesis
+   The orb tracks all three phases: listening, thinking, speaking.
+   ============================================================ */
+
+const convo = {
+  rec: null, active: false, history: [], speaking: false,
+  speakTimer: null, restarting: false,
+};
+
+function transcriptEl() { return document.getElementById('transcript'); }
+
+function addTurn(who, text, interim) {
+  const box = transcriptEl();
+  if (!box) return null;
+  box.classList.remove('hidden');
+  let el = interim ? box.querySelector('.turn.interim') : null;
+  if (!el) {
+    el = document.createElement('div');
+    box.appendChild(el);
+  }
+  el.className = `turn ${who}${interim ? ' interim' : ''}`;
+  el.textContent = text;
+  box.scrollTop = box.scrollHeight;
+  return el;
+}
+
+/* speechSynthesis gives no audio stream to analyse, so the orb is animated
+   procedurally while it speaks -- driven by the utterance's own boundary
+   events so the motion tracks the actual cadence of the words. */
+function startSpeakingAnimation() {
+  convo.speaking = true;
+  setOrbState('speaking');
+  let phase = 0;
+  clearInterval(convo.speakTimer);
+  convo.speakTimer = setInterval(() => {
+    phase += 0.35;
+    orb.level = 0.28 + 0.22 * Math.abs(Math.sin(phase)) + Math.random() * 0.08;
+  }, 70);
+}
+
+function stopSpeakingAnimation() {
+  convo.speaking = false;
+  clearInterval(convo.speakTimer);
+  convo.speakTimer = null;
+  if (!orb.analyser) orb.level = 0;
+  setOrbState(orb.baseState || 'idle');
+}
+
+function speak(text) {
+  if (!('speechSynthesis' in window) || !text.trim()) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = 1.06;
+  u.pitch = 1.0;
+  const voices = window.speechSynthesis.getVoices();
+  // Prefer a natural en-US voice when the platform offers one.
+  const pick = voices.find((v) => /Samantha|Ava|Serena|Google US English/i.test(v.name))
+    || voices.find((v) => v.lang === 'en-US');
+  if (pick) u.voice = pick;
+  u.onstart = startSpeakingAnimation;
+  u.onend = stopSpeakingAnimation;
+  u.onerror = stopSpeakingAnimation;
+  window.speechSynthesis.speak(u);
+}
+
+async function askClaude(question) {
+  addTurn('you', question);
+  convo.history.push({ role: 'user', content: question });
+  setOrbState('thinking');
+  say('Thinking…', question);
+
+  const el = addTurn('claude', '');
+  let full = '';
+  try {
+    const res = await fetch('/api/assistant', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, history: convo.history.slice(0, -1) }),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch (e) { /* keep */ }
+      throw new Error(detail);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const frames = buf.split('\n\n');
+      buf = frames.pop();
+      for (const frame of frames) {
+        if (frame.startsWith('event: error')) {
+          throw new Error(frame.split('data: ')[1] || 'assistant error');
+        }
+        if (frame.startsWith('event: done')) continue;
+        const line = frame.split('data: ')[1];
+        if (line == null) continue;
+        full += line.replace(/\\n/g, '\n');
+        el.textContent = full;
+        transcriptEl().scrollTop = transcriptEl().scrollHeight;
+      }
+    }
+  } catch (err) {
+    full = `Assistant unavailable: ${err.message}`;
+    el.textContent = full;
+    setOrbState(orb.baseState || 'idle');
+    say('Assistant unavailable.', err.message);
+    return;
+  }
+  convo.history.push({ role: 'assistant', content: full });
+  say(full.split(/(?<=[.!?])\s/)[0] || full, full);
+  speak(full);
+}
+
+function startConversation() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const note = document.getElementById('mic-note');
+  if (!SR) {
+    note.textContent = 'Speech recognition is unavailable in this window. '
+      + 'Run "ff app --browser" and use Chrome or Safari, or type your question below.';
+    showTypeFallback();
+    return;
+  }
+  const rec = new SR();
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.lang = 'en-US';
+
+  rec.onresult = (e) => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      const text = r[0].transcript.trim();
+      if (r.isFinal) {
+        const el = transcriptEl().querySelector('.turn.interim');
+        if (el) el.remove();
+        if (text.length > 1 && !convo.speaking) askClaude(text);
+      } else {
+        interim += text + ' ';
+      }
+    }
+    if (interim.trim()) addTurn('you', interim.trim(), true);
+  };
+  rec.onerror = (e) => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      note.textContent = 'Microphone permission denied. '
+        + 'Allow it in your browser, or type your question below.';
+      showTypeFallback();
+      stopConversation();
+    }
+  };
+  // Continuous recognition still stops on its own; restart unless we meant to end.
+  rec.onend = () => {
+    if (convo.active && !convo.restarting) {
+      convo.restarting = true;
+      setTimeout(() => { convo.restarting = false; try { rec.start(); } catch (e) {} }, 250);
+    }
+  };
+
+  convo.rec = rec;
+  convo.active = true;
+  try { rec.start(); } catch (e) { /* already started */ }
+
+  const btn = document.getElementById('talk-toggle');
+  btn.classList.add('on');
+  btn.innerHTML = '<span class="mic-dot"></span> End conversation';
+  note.textContent = 'Listening. Speech is recognised by your browser — only the transcript is sent to Claude.';
+  setOrbState('listening');
+  if (!orb.analyser) toggleMic();   // drive the visualiser from the same mic
+}
+
+function stopConversation() {
+  convo.active = false;
+  if (convo.rec) { try { convo.rec.stop(); } catch (e) {} convo.rec = null; }
+  window.speechSynthesis && window.speechSynthesis.cancel();
+  stopSpeakingAnimation();
+  const btn = document.getElementById('talk-toggle');
+  btn.classList.remove('on');
+  btn.innerHTML = '<span class="mic-dot"></span> Start conversation';
+  setOrbState(orb.baseState || 'idle');
+}
+
+function showTypeFallback() {
+  if (document.getElementById('ask-box')) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'console-actions';
+  wrap.innerHTML = '<input id="ask-box" type="search" placeholder="Ask about the draft…" '
+    + 'style="width:340px">';
+  document.querySelector('.console-readout').appendChild(wrap);
+  document.getElementById('ask-box').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.value.trim()) {
+      askClaude(e.target.value.trim());
+      e.target.value = '';
+    }
+  });
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  const btn = document.getElementById('talk-toggle');
+  if (!btn) return;
+  btn.addEventListener('click', () =>
+    (convo.active ? stopConversation() : startConversation()));
+
+  try {
+    const a = await api('/api/assistant');
+    if (!a.available) {
+      btn.disabled = true;
+      btn.style.opacity = '.5';
+      document.getElementById('mic-note').innerHTML =
+        'Voice chat needs an Anthropic API key. Add <code>ANTHROPIC_API_KEY</code> '
+        + 'to your .env file, then restart the app.';
+    }
+  } catch (e) { /* status endpoint unavailable; leave the button as-is */ }
+});

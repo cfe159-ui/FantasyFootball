@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -532,6 +532,76 @@ def draft_export() -> Dict:
     path = DATA_DIR / "roster.txt"
     path.write_text("\n".join(state.my_roster_names) + "\n")
     return {"ok": True, "count": len(state.my_roster_names)}
+
+
+# -- conversational assistant -------------------------------------------------
+
+class AssistantAsk(BaseModel):
+    question: str
+    history: List[Dict[str, str]] = []
+
+
+@app.get("/api/assistant")
+def assistant_status() -> Dict:
+    from . import assistant
+
+    return {"available": assistant.available(), "model": assistant.MODEL}
+
+
+@app.post("/api/assistant")
+def assistant_ask(req: AssistantAsk):
+    """Stream a spoken-length answer, with the live draft board as context."""
+    from . import assistant
+
+    if not assistant.available():
+        raise HTTPException(400, "No ANTHROPIC_API_KEY configured.")
+    question = (req.question or "").strip()
+    if not question:
+        raise HTTPException(400, "Empty question.")
+
+    # Assemble the board snapshot before streaming starts, so a slow board build
+    # does not stall the response mid-stream.
+    draft_payload: Optional[Dict] = None
+    roster_payload: Optional[List[Dict]] = None
+    try:
+        state = DraftState.load()
+        if state is not None:
+            board, universe, shape = get_board()
+            shape.num_teams = state.teams
+            candidates = rank_candidates(board, state, shape, universe, limit=12)
+            draft_payload = {
+                **_draft_json(state),
+                "needs": roster_needs(state, shape, universe),
+                "runs": positional_runs(state),
+            }
+            cand_payload = [{
+                "name": c.player.name, "position": c.player.position,
+                "team": c.player.team, "vor": c.valued.vor,
+                "lineup_gain": round(c.lineup_gain * 16, 1),
+                "tier_remaining": c.tier_remaining, "survival": c.survival,
+            } for c in candidates]
+        else:
+            cand_payload = []
+            roster_payload = roster().get("players")
+    except Exception:  # noqa: BLE001 - answer without board context rather than fail
+        cand_payload = []
+
+    context = assistant.build_context(status(), draft_payload,
+                                      cand_payload, roster_payload)
+
+    def events():
+        try:
+            for chunk in assistant.stream_reply(question, context, req.history):
+                # Server-sent events: newlines are the record separator, so any
+                # newline inside a chunk has to be escaped.
+                yield "data: " + chunk.replace("\n", "\\n") + "\n\n"
+        except Exception as exc:  # noqa: BLE001
+            yield "event: error\ndata: " + str(exc)[:200].replace("\n", " ") + "\n\n"
+        yield "event: done\ndata: end\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store",
+                                      "X-Accel-Buffering": "no"})
 
 
 # -- podcasts -----------------------------------------------------------------

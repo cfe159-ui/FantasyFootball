@@ -436,3 +436,47 @@ def test_orb_builds_svg_nodes_with_namespace():
     assert "createElementNS" in js
     build = js[js.index("function buildOrb"): js.index("function drawBars")]
     assert ".innerHTML" not in build, "buildOrb must not use innerHTML on SVG nodes"
+
+
+# --------------------------------------------------------------------------
+# Conversational assistant
+# --------------------------------------------------------------------------
+
+def test_assistant_uses_the_current_model_id():
+    from ff.web import assistant
+
+    assert assistant.MODEL == "claude-opus-5"
+
+
+def test_assistant_reports_unavailable_without_a_key(monkeypatch):
+    from ff.web import assistant
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert assistant.available() is False
+    with pytest.raises(assistant.AssistantUnavailable):
+        assistant._client()
+
+
+def test_assistant_context_carries_the_live_board():
+    from ff.web import assistant
+
+    ctx = assistant.build_context(
+        {"league": {"teams": 10, "ppr": 0.5, "slots": {"QB": 1}, "superflex": False}},
+        {"active": True, "pick_number": 4, "round": 1, "slot": 4, "my_turn": True,
+         "picks_until_mine": 0, "my_roster": [], "needs": {"RB": 2},
+         "runs": {"RB": 3}, "taken": [{"name": "Bijan Robinson"}]},
+        [{"name": "Christian McCaffrey", "position": "RB", "team": "SF",
+          "vor": 137, "lineup_gain": 137.0, "tier_remaining": 1, "survival": 0.1}],
+    )
+    assert "ON THE CLOCK" in ctx
+    assert "Christian McCaffrey" in ctx
+    assert "RUN IN LAST 8 PICKS" in ctx
+    assert "will not last" in ctx          # survival warning reaches the model
+
+
+def test_assistant_prompt_demands_short_spoken_answers():
+    """A long reply is worse than a wrong one when TTS reads it aloud."""
+    from ff.web import assistant
+
+    assert "two or three sentences" in assistant.SYSTEM.lower()
+    assert assistant.MAX_TOKENS <= 1000

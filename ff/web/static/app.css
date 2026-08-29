@@ -441,3 +441,23 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 12.5px;
 @media (prefers-reduced-motion: reduce) {
   .ring, .core { animation: none !important; }
 }
+
+/* ---------- conversation transcript ---------- */
+
+.transcript {
+  margin-top: 14px; max-height: 190px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 8px;
+  border-left: 2px solid var(--glow-dim); padding-left: 14px;
+}
+.turn { font-size: 13.5px; line-height: 1.5; }
+.turn.you { color: var(--muted); }
+.turn.you::before { content: "you  "; font-family: var(--mono); font-size: 10.5px;
+  letter-spacing: 1.2px; opacity: .65; text-transform: uppercase; }
+.turn.claude::before { content: "claude  "; font-family: var(--mono); font-size: 10.5px;
+  letter-spacing: 1.2px; color: var(--glow); text-transform: uppercase; }
+.turn.interim { opacity: .5; font-style: italic; }
+
+.console[data-state="thinking"] { --glow: #a78bfa; --glow-hot: #e9e0ff;
+  --glow-dim: rgba(167,139,250,.28); }
+.console[data-state="speaking"] { --glow: #35c8f0; --glow-hot: #d6f7ff; }
+.console[data-state="thinking"] .ring-inner { animation-duration: 3s; }
