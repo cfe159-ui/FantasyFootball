@@ -117,8 +117,21 @@ def build_context(status: Dict, draft: Optional[Dict],
 
 
 def stream_reply(question: str, context: str,
-                 history: Optional[List[Dict[str, str]]] = None) -> Iterator[str]:
-    """Stream Claude's spoken answer, token by token."""
+                 history: Optional[List[Dict[str, str]]] = None,
+                 usage_sink: Optional[Dict[str, Any]] = None) -> Iterator[str]:
+    """Stream Claude's spoken answer, token by token.
+
+    Caching note: the breakpoint sits after the board, not after the static
+    instructions. Those instructions are only ~206 tokens -- below Claude Opus
+    5's 512-token minimum cacheable prefix -- so a breakpoint there creates no
+    cache entry at all and fails silently. Including the board brings the prefix
+    to ~1000 tokens, which does cache, and the board is identical across every
+    question asked on the same pick. That is the case worth optimising: asking
+    two or three follow-ups while on the clock.
+
+    The cache is invalidated on the next pick, which is correct -- the board
+    genuinely changed.
+    """
     client = _client()
     messages: List[Dict[str, Any]] = []
     for turn in (history or [])[-6:]:      # a short memory keeps latency down
@@ -132,11 +145,12 @@ def stream_reply(question: str, context: str,
         model=MODEL,
         max_tokens=MAX_TOKENS,
         system=[
-            # Stable half first so it stays cacheable across turns; the live
-            # board changes every pick and must come after it.
-            {"type": "text", "text": SYSTEM,
+            {"type": "text", "text": SYSTEM},
+            # Breakpoint after the board: the instructions alone are too short
+            # to reach the cacheable minimum, and the board is stable for every
+            # question asked on the same pick.
+            {"type": "text", "text": "CURRENT BOARD\n" + context,
              "cache_control": {"type": "ephemeral"}},
-            {"type": "text", "text": "CURRENT BOARD\n" + context},
         ],
         # Speed matters more than depth for a spoken answer on the clock.
         output_config={"effort": "low"},
@@ -144,3 +158,13 @@ def stream_reply(question: str, context: str,
     ) as stream:
         for chunk in stream.text_stream:
             yield chunk
+        if usage_sink is not None:
+            u = stream.get_final_message().usage
+            usage_sink.update({
+                "input_tokens": getattr(u, "input_tokens", 0),
+                "output_tokens": getattr(u, "output_tokens", 0),
+                "cache_creation_input_tokens":
+                    getattr(u, "cache_creation_input_tokens", 0) or 0,
+                "cache_read_input_tokens":
+                    getattr(u, "cache_read_input_tokens", 0) or 0,
+            })

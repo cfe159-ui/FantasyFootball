@@ -480,3 +480,29 @@ def test_assistant_prompt_demands_short_spoken_answers():
 
     assert "two or three sentences" in assistant.SYSTEM.lower()
     assert assistant.MAX_TOKENS <= 1000
+
+
+def test_cache_breakpoint_sits_after_the_board_not_the_instructions():
+    """The static instructions are ~206 tokens, under Opus 5's 512-token
+    minimum cacheable prefix. A breakpoint there creates no cache entry and
+    fails silently; including the board reaches ~1000 tokens and does cache."""
+    import inspect
+
+    from ff.web import assistant
+
+    src = inspect.getsource(assistant.stream_reply)
+    board_at = src.index("CURRENT BOARD")
+    marker_at = src.index("cache_control")
+    assert marker_at > board_at, "cache_control must mark the board block, not SYSTEM"
+
+
+def test_stream_reply_can_report_cache_usage():
+    import inspect
+
+    from ff.web import assistant
+
+    sig = inspect.signature(assistant.stream_reply)
+    assert "usage_sink" in sig.parameters
+    src = inspect.getsource(assistant.stream_reply)
+    for field in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+        assert field in src

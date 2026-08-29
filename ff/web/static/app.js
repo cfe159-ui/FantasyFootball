@@ -861,6 +861,10 @@ async function askClaude(question) {
         if (frame.startsWith('event: error')) {
           throw new Error(frame.split('data: ')[1] || 'assistant error');
         }
+        if (frame.startsWith('event: usage')) {
+          try { showUsage(JSON.parse(frame.split('data: ')[1])); } catch (e) { /* ignore */ }
+          continue;
+        }
         if (frame.startsWith('event: done')) continue;
         const line = frame.split('data: ')[1];
         if (line == null) continue;
@@ -981,3 +985,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   } catch (e) { /* status endpoint unavailable; leave the button as-is */ }
 });
+
+
+/* Cache behaviour is invisible unless you show it, and a silent cache miss is
+   the most common prompt-caching failure. */
+function showUsage(u) {
+  const note = document.getElementById('mic-note');
+  if (!note || !u || u.input_tokens == null) return;
+  const read = u.cache_read_input_tokens || 0;
+  const wrote = u.cache_creation_input_tokens || 0;
+  const fresh = u.input_tokens || 0;
+  const billedIn = fresh + wrote + read;
+  const pct = billedIn ? Math.round((read / billedIn) * 100) : 0;
+  const cache = read
+    ? `<span style="color:var(--good)">${read.toLocaleString()} tokens from cache (${pct}%)</span>`
+    : wrote
+      ? `<span class="muted">cache written (${wrote.toLocaleString()} tokens) — follow-ups on this pick reuse it</span>`
+      : '<span class="muted">no cache</span>';
+  note.innerHTML = `${cache} · ${u.output_tokens} out`;
+}

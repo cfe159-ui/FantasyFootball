@@ -590,13 +590,19 @@ def assistant_ask(req: AssistantAsk):
                                       cand_payload, roster_payload)
 
     def events():
+        usage: Dict[str, Any] = {}
         try:
-            for chunk in assistant.stream_reply(question, context, req.history):
+            for chunk in assistant.stream_reply(question, context, req.history,
+                                                usage_sink=usage):
                 # Server-sent events: newlines are the record separator, so any
                 # newline inside a chunk has to be escaped.
                 yield "data: " + chunk.replace("\n", "\\n") + "\n\n"
         except Exception as exc:  # noqa: BLE001
             yield "event: error\ndata: " + str(exc)[:200].replace("\n", " ") + "\n\n"
+        # Report cache behaviour so a silent cache miss is visible rather than
+        # something you have to take on faith.
+        import json as _json
+        yield "event: usage\ndata: " + _json.dumps(usage) + "\n\n"
         yield "event: done\ndata: end\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream",
