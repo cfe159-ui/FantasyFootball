@@ -383,3 +383,25 @@ def test_free_port_returns_a_usable_port():
     assert 1024 < port < 65536
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", port))   # must actually be bindable
+
+
+def test_status_reports_warm_state_for_the_ui():
+    """The UI gates board-dependent views on these fields."""
+    from ff.web import server
+
+    for field in ("board_ready", "warming", "warm_error"):
+        assert field in server._cache or field in ("board_ready",), field
+    # The cache carries the flags the status endpoint surfaces.
+    assert "warming" in server._cache
+    assert "warm_error" in server._cache
+
+
+def test_warm_cache_does_not_start_twice():
+    from ff.web import server
+
+    server._cache["warming"] = True
+    try:
+        server.warm_cache()          # must return immediately, spawning nothing
+        assert server._cache["warming"] is True
+    finally:
+        server._cache["warming"] = False

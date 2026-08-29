@@ -3,7 +3,8 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 
-const state = { view: 'draft', bias: 0.5, pos: 'ALL', status: null, draft: null };
+const state = { view: 'draft', bias: 0.5, pos: 'ALL', status: null, draft: null,
+  ready: false, warmTimer: null };
 
 const TITLES = {
   draft: ['Draft Room', 'Mark picks as they happen; the board re-ranks for your roster'],
@@ -51,6 +52,8 @@ function table(headers, rows) {
 
 /* ---------------- navigation ---------------- */
 
+const NEEDS_BOARD = new Set(['team', 'board', 'waivers', 'teams', 'podcasts']);
+
 function show(view) {
   state.view = view;
   $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
@@ -58,6 +61,7 @@ function show(view) {
   const [title, sub] = TITLES[view] || [view, ''];
   $('#view-title').textContent = title;
   $('#view-sub').textContent = sub;
+  if (!state.ready && NEEDS_BOARD.has(view)) return;   // the warming bar explains why
   LOADERS[view] && LOADERS[view]();
 }
 
@@ -71,7 +75,48 @@ async function loadStatus() {
     `${lg.teams}-team · ${lg.ppr === 1 ? 'PPR' : lg.ppr === 0.5 ? '½ PPR' : 'standard'}`;
   $('#src-fp').className = 'dot ' + (s.sources.fantasypros ? 'on' : 'off');
   $('#src-yahoo').className = 'dot ' + (s.sources.yahoo_authorized ? 'on' : 'off');
+  renderWarming(s);
   return s;
+}
+
+/* The board is built at startup in the background. Show its progress rather
+   than leaving a view on a skeleton, and load the current view the moment it
+   becomes available. */
+function renderWarming(s) {
+  const bar = $('#warming');
+  const wasReady = state.ready;
+  state.ready = !!s.board_ready;
+
+  if (s.warm_error) {
+    bar.className = 'warming error';
+    $('#warming-text').textContent = `Could not build projections: ${s.warm_error}`;
+    stopWarmPolling();
+    return;
+  }
+  if (state.ready) {
+    bar.classList.add('hidden');
+    stopWarmPolling();
+    // Refresh whatever the user is looking at, now that data exists.
+    if (!wasReady && LOADERS[state.view]) LOADERS[state.view]();
+    return;
+  }
+  bar.className = 'warming';
+  const secs = s.warming_seconds;
+  $('#warming-text').textContent = secs != null
+    ? `Building projections… ${secs.toFixed(0)}s`
+    : 'Building projections…';
+  startWarmPolling();
+}
+
+function startWarmPolling() {
+  if (state.warmTimer) return;
+  state.warmTimer = setInterval(async () => {
+    try { await loadStatus(); } catch (e) { /* keep trying */ }
+  }, 1200);
+}
+
+function stopWarmPolling() {
+  if (state.warmTimer) { clearInterval(state.warmTimer); state.warmTimer = null; }
 }
 
 /* ---------------- draft ---------------- */
@@ -468,15 +513,19 @@ $('#s-save').addEventListener('click', async () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ num_teams: +$('#s-teams').value, ppr: +$('#s-ppr').value, slots }),
     });
-    $('#s-msg').textContent = 'Saved. Projections will rebuild.';
+    $('#s-msg').textContent = 'Saved. Rebuilding projections…';
+    state.ready = false;
     await loadStatus();
   } catch (err) { $('#s-msg').textContent = err.message; }
 });
 
 $('#refresh').addEventListener('click', async () => {
   toast('Rebuilding projections…');
-  try { await api(`/api/board?limit=1&refresh=true&team_bias=${state.bias}`); toast('Rebuilt'); }
-  catch (e) { toast(e.message); }
+  try {
+    await api(`/api/board?limit=1&refresh=true&team_bias=${state.bias}`);
+    toast('Rebuilt');
+  } catch (e) { toast(e.message); }
+  await loadStatus();
   LOADERS[state.view] && LOADERS[state.view]();
 });
 

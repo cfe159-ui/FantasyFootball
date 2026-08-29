@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from contextlib import asynccontextmanager
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
@@ -36,10 +38,43 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 # directly (uvicorn, the app bundle), so load it here too.
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
-app = FastAPI(title="Fantasy Football Agent")
-
 _lock = threading.Lock()
-_cache: Dict[str, Any] = {"key": None, "board": None, "universe": None, "built_at": 0}
+_cache: Dict[str, Any] = {"key": None, "board": None, "universe": None,
+                          "built_at": 0, "warming": False, "warm_error": None,
+                          "warm_started": 0}
+
+
+def warm_cache(team_bias: float = 0.5) -> None:
+    """Build the board in the background so the first view is not a nine-second wait.
+
+    The projection board spans four sources and three seasons of history and
+    takes roughly nine seconds cold. Starting it at launch means it is usually
+    ready by the time anyone navigates away from the draft setup screen.
+    """
+    if _cache["warming"]:
+        return
+    _cache["warming"] = True
+    _cache["warm_error"] = None
+    _cache["warm_started"] = time.time()
+
+    def run() -> None:
+        try:
+            get_board(team_bias)
+        except Exception as exc:  # noqa: BLE001 - surfaced through /api/status
+            _cache["warm_error"] = str(exc)[:300]
+        finally:
+            _cache["warming"] = False
+
+    threading.Thread(target=run, daemon=True, name="warm-board").start()
+
+
+@asynccontextmanager
+async def lifespan(_app: "FastAPI"):
+    warm_cache()
+    yield
+
+
+app = FastAPI(title="Fantasy Football Agent", lifespan=lifespan)
 
 
 # --------------------------------------------------------------------------
@@ -140,6 +175,11 @@ def status() -> Dict:
         "roster_file": str(DATA_DIR / "roster.txt"),
         "board_age_seconds": round(time.time() - _cache["built_at"], 1)
         if _cache["built_at"] else None,
+        "board_ready": bool(_cache["board"]),
+        "warming": bool(_cache["warming"]),
+        "warming_seconds": round(time.time() - _cache["warm_started"], 1)
+        if _cache["warming"] and _cache["warm_started"] else None,
+        "warm_error": _cache["warm_error"],
     }
 
 
@@ -154,7 +194,9 @@ def set_league(update: LeagueUpdate) -> Dict:
     config.set_("league_shape", {"num_teams": update.num_teams,
                                  "ppr": update.ppr, "slots": update.slots})
     with _lock:
-        _cache["key"] = None      # force a rebuild on next request
+        _cache["key"] = None      # force a rebuild
+        _cache["board"] = None
+    warm_cache()                  # rebuild now rather than on the next click
     return {"ok": True}
 
 
