@@ -506,3 +506,68 @@ def test_stream_reply_can_report_cache_usage():
     src = inspect.getsource(assistant.stream_reply)
     for field in ("cache_read_input_tokens", "cache_creation_input_tokens"):
         assert field in src
+
+
+# --------------------------------------------------------------------------
+# Assistant board context
+# --------------------------------------------------------------------------
+
+def _ranked(name, pos, vor, rank=1, **kw):
+    return {"name": name, "position": pos, "team": "SF", "vor": vor,
+            "points": 200.0, "position_rank": rank, "tier": 1, **kw}
+
+
+def test_rankings_reach_the_assistant_without_an_active_draft():
+    """The original bug: rankings were only assembled when a draft was running,
+    so outside a draft the assistant had no player pool and said so."""
+    from ff.web import assistant
+
+    ctx = assistant.build_context(
+        {"league": {"teams": 10, "ppr": 0.5, "slots": {"QB": 1}, "superflex": False}},
+        None,                                  # no draft in progress
+        [],                                    # no draft candidates
+        [{"name": "Mine", "position": "RB", "ppg": 12.0}],
+        rankings={"overall": [_ranked("Jahmyr Gibbs", "RB", 164)],
+                  "TE": [_ranked("Brock Bowers", "TE", 53)]},
+    )
+    assert "Jahmyr Gibbs" in ctx
+    assert "Brock Bowers" in ctx
+    assert "TOP OF THE BOARD" in ctx
+
+
+def test_positional_depth_is_available_for_position_questions():
+    from ff.web import assistant
+
+    ctx = assistant.build_context(
+        {"league": {"teams": 10, "ppr": 0.5, "slots": {}, "superflex": False}},
+        None, [], None,
+        rankings={"overall": [], "QB": [_ranked("A QB", "QB", 40)],
+                  "TE": [_ranked("A TE", "TE", 30)]},
+    )
+    assert "BEST QB" in ctx and "A QB" in ctx
+    assert "BEST TE" in ctx and "A TE" in ctx
+
+
+def test_scarcity_reaches_the_assistant():
+    from ff.web import assistant
+
+    ctx = assistant.build_context(
+        {"league": {"teams": 10, "ppr": 0.5, "slots": {}, "superflex": False}},
+        None, [], None,
+        scarcity={"RB": {"cliff": 50.0, "replacement_rank": 38}},
+    )
+    assert "SCARCITY" in ctx and "38" in ctx
+
+
+def test_endpoint_builds_rankings_outside_a_draft():
+    """Guards the shape of the fix, not just the formatter."""
+    import inspect
+
+    from ff.web import server
+
+    src = inspect.getsource(server.assistant_ask)
+    board_at = src.index("board, universe, shape = get_board()")
+    state_at = src.index("state = DraftState.load()")
+    assert board_at < state_at, "the board must be built regardless of draft state"
+    assert 'rankings["overall"]' in src
+    assert "v.player.key not in taken" in src, "drafted players must be excluded"

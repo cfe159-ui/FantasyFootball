@@ -59,10 +59,33 @@ def _client():
     return anthropic.Anthropic()
 
 
+def _fmt_player(p: Dict) -> str:
+    bits = [f"{p.get('name')} ({p.get('position')}-{p.get('team')})"]
+    if p.get("vor") is not None:
+        bits.append(f"VOR {p['vor']:+.0f}")
+    if p.get("points") is not None:
+        bits.append(f"{p['points']:.0f}pts")
+    if p.get("position_rank"):
+        bits.append(f"{p.get('position')}{p['position_rank']}")
+    if p.get("tier"):
+        bits.append(f"tier {p['tier']}")
+    if p.get("injury"):
+        bits.append(str(p["injury"]))
+    if p.get("rookie"):
+        bits.append("rookie")
+    return ", ".join(bits)
+
+
 def build_context(status: Dict, draft: Optional[Dict],
                   candidates: Optional[List[Dict]] = None,
-                  roster: Optional[List[Dict]] = None) -> str:
+                  roster: Optional[List[Dict]] = None,
+                  rankings: Optional[Dict[str, List[Dict]]] = None,
+                  scarcity: Optional[Dict[str, Dict]] = None) -> str:
     """Compact snapshot of the league and board for the system prompt.
+
+    The rankings are included whether or not a draft is running -- most
+    questions ("who is the best tight end", "is Nacua worth it") are about the
+    board itself, not about a pick on the clock.
 
     Deliberately terse: every token here is paid for on each turn of the
     conversation, and a voice exchange has many turns.
@@ -107,6 +130,27 @@ def build_context(status: Dict, draft: Optional[Dict],
                 + (", will not last to your next pick"
                    if (c.get("survival") or 1) < 0.3 else "")
             )
+
+    if scarcity:
+        lines.append("POSITIONAL SCARCITY (cliff = value lost by waiting; "
+                     "replacement rank = where the position becomes streamable):")
+        for pos, d in sorted(scarcity.items(),
+                             key=lambda kv: -(kv[1].get("cliff") or 0)):
+            lines.append(f"  {pos}: cliff {d.get('cliff'):.0f}, "
+                         f"replacement at #{d.get('replacement_rank')}")
+
+    if rankings:
+        overall = rankings.get("overall") or []
+        if overall:
+            lines.append("TOP OF THE BOARD (value over replacement, "
+                         "under this league's rules):")
+            for i, p in enumerate(overall, 1):
+                lines.append(f"  {i}. {_fmt_player(p)}")
+        for pos in ("QB", "RB", "WR", "TE", "K", "DST"):
+            group = rankings.get(pos) or []
+            if group:
+                lines.append(f"BEST {pos}: " + "; ".join(
+                    _fmt_player(p) for p in group))
 
     if roster:
         lines.append("YOUR ROSTER: " + ", ".join(

@@ -563,11 +563,17 @@ def assistant_ask(req: AssistantAsk):
     # does not stall the response mid-stream.
     draft_payload: Optional[Dict] = None
     roster_payload: Optional[List[Dict]] = None
+    cand_payload: List[Dict] = []
+    rankings: Dict[str, List[Dict]] = {}
+    scarcity: Dict[str, Dict] = {}
     try:
+        board, universe, shape = get_board()
+        taken: set = set()
         state = DraftState.load()
+
         if state is not None:
-            board, universe, shape = get_board()
             shape.num_teams = state.teams
+            taken = state.taken_keys
             candidates = rank_candidates(board, state, shape, universe, limit=12)
             draft_payload = {
                 **_draft_json(state),
@@ -580,14 +586,32 @@ def assistant_ask(req: AssistantAsk):
                 "lineup_gain": round(c.lineup_gain * 16, 1),
                 "tier_remaining": c.tier_remaining, "survival": c.survival,
             } for c in candidates]
-        else:
-            cand_payload = []
+
+        # Rankings go in whether or not a draft is running: most questions are
+        # about the board itself, not about a pick on the clock. Players already
+        # drafted are filtered out so the assistant never recommends one.
+        pool = [v for v in board if v.player.key not in taken]
+        top = pool[:20]
+        rankings["overall"] = [player_json(v) for v in top]
+        # The overall list is mostly backs and receivers, so listing them again
+        # per position doubles the token cost for no extra information. Show
+        # each position's best players that the overall list did not already
+        # cover -- that is where the depth actually comes from.
+        seen = {v.player.key for v in top}
+        for pos in ("QB", "RB", "WR", "TE", "K", "DST"):
+            group = [v for v in pool
+                     if (v.player.position or "").upper() == pos
+                     and v.player.key not in seen]
+            rankings[pos] = [player_json(v) for v in group[:8]]
+        scarcity = positional_scarcity(board, shape)
+
+        if state is None:
             roster_payload = roster().get("players")
     except Exception:  # noqa: BLE001 - answer without board context rather than fail
-        cand_payload = []
+        pass
 
-    context = assistant.build_context(status(), draft_payload,
-                                      cand_payload, roster_payload)
+    context = assistant.build_context(status(), draft_payload, cand_payload,
+                                      roster_payload, rankings, scarcity)
 
     def events():
         usage: Dict[str, Any] = {}
